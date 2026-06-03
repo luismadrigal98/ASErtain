@@ -57,7 +57,7 @@ def run_contrast(gene_ase: List[Dict], parental_de: List[Dict], *,
     """Join gene-level ASE (cis) with parental DE (total) and classify.
 
     `parental_de` rows must give a log2 fold change oriented as
-    variable/fixed (kunthii/amphorellae) and an adjusted p-value.
+    variable/fixed (variable-species over fixed-species) and an adjusted p-value.
     """
     de_index: Dict[str, Dict] = {row[de_gene_col]: row for row in parental_de}
     out: List[Dict] = []

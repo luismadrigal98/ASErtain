@@ -31,7 +31,7 @@ def _add_diagnose_filters(p: argparse.ArgumentParser) -> None:
                    help="Min depth to call a parent genotype (default: 8)")
     g.add_argument("--maf-threshold", type=float, default=0.10,
                    help="Max minor-allele fraction to still call a parent "
-                        "homozygous, tolerating RNA-seq noise (default: 0.10)")
+                        "homozygous, tolerating sequencing noise (default: 0.10)")
     g.add_argument("--min-qual", type=float, default=30.0,
                    help="Min variant QUAL (default: 30)")
     g.add_argument("--chrom-filter", default=None,

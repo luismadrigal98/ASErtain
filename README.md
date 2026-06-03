@@ -26,7 +26,7 @@ Requires Python ≥ 3.9, `numpy`, `scipy`, `pyyaml`, and `samtools` on `PATH`.
 ## Quick start
 
 1. Describe your cross in a YAML config (see `example_config.yaml`):
-   which exact parent plants belong to each species, and which F1 replicate maps
+   which exact parent individuals belong to each species, and which F1 replicate maps
    to which parental background.
 
 2. Run the whole pipeline:

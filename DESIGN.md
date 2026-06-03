@@ -49,7 +49,7 @@ run       -> all of the above from one config
 ### 1. Diagnostic-SNP selection uses *exact-parent* genotypes
 
 Rather than pooling a whole species and calling fixation by frequency, each named
-parent plant is genotyped individually. A site is kept only when:
+parent individual is genotyped separately. A site is kept only when:
 
 1. every variable-species parent is homozygous and they **agree**,
 2. the fixed-species parent(s) are homozygous, and
@@ -60,7 +60,7 @@ emitted as **`background_specific`** and used only for the F1s descending from
 the parent for which they are cleanly diagnostic. This preserves a robust
 **`shared`** set for combined analysis while retaining per-background power.
 
-Genotype calling tolerates RNA-seq noise: a parent is called homozygous when the
+Genotype calling tolerates sequencing noise: a parent is called homozygous when the
 minor-allele fraction (from `AD`) is below `--maf-threshold`, not strictly zero.
 
 ### 2. Reference-mapping bias is selectable by flag
@@ -82,7 +82,8 @@ choice is transparent downstream.
 
 ### 3. Statistics respect the replicate structure
 
-The unit of biological replication is the **F1 plant**, not the SNP or the read.
+The unit of biological replication is the **F1 individual**, not the SNP or the
+read.
 
 * **Primary test** — collapse each gene's diagnostic SNPs to one (variable,
   fixed) count per replicate, take the per-replicate logit allelic ratio, and run

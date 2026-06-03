@@ -2,20 +2,22 @@
 
 Design rationale (the part the IGV-by-eye approach can't give you):
 
-* The unit of biological replication is the **F1 plant**, not the SNP and not
-  the read. Linked SNPs in one gene are not independent, and pooling reads into
-  a single binomial ignores plant-to-plant overdispersion (anti-conservative).
+* The unit of biological replication is the **F1 individual**, not the SNP and
+  not the read. Linked SNPs in one gene are not independent, and pooling reads
+  into a single binomial ignores individual-to-individual overdispersion
+  (anti-conservative).
 * Primary gene-level test: collapse each gene's diagnostic SNPs to one
   (variable, fixed) count *per replicate*, take the logit allelic ratio per
   replicate, and run a one-sample t-test of those logits against the null
-  (0.5, or a bias-adjusted expectation). With 6 F1 reps this has real power and
-  the right error model.
+  (0.5, or a bias-adjusted expectation). With a handful of F1 replicates this
+  has real power and the right error model.
 * Secondary test: a beta-binomial fit across replicates that uses read depth
   while still modelling overdispersion (LRT of mean vs null).
 * We also report the naive pooled binomial purely as a descriptive number,
   clearly flagged as anti-conservative.
-* Consistency across the two kunthii backgrounds is reported explicitly: a gene
-  biased the same direction in both k1 and k2 F1s is the robust call.
+* Consistency across variable-species backgrounds is reported explicitly: a gene
+  biased the same direction in the F1s of every parental background is the robust
+  call.
 """
 from __future__ import annotations
 

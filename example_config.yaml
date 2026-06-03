@@ -1,15 +1,19 @@
-# ASErtain cross-design configuration — Penstemon kunthii × amphorellae FLS study
+# ASErtain cross-design configuration (template)
 #
-# The "variable" species is the one with multiple cross parents and the up/down
-# regulation of interest (kunthii); the "fixed" species is the single-parent
-# side (amphorellae). F1 replicates are grouped by which kunthii parent they
-# descend from, via the `background` field, which must match a variable_parents
-# `name`.
+# Describe a two-parent / F1 design. ASErtain works in terms of generic roles:
+#
+#   variable species : the parental lineage carrying the expression difference
+#                      of interest, possibly with several cross parents
+#   fixed species    : the other parental lineage, typically a single cross parent
+#   background       : an F1 grouping by which variable-species parent it
+#                      descends from (must match a variable_parents `name`)
+#
+# Assign your own display labels below; nothing in the code is organism-specific.
 
-project: penstemon_fls_ase
+project: my_ase_study
 
-variable_label: kunthii
-fixed_label: amphorellae
+variable_label: speciesA          # display name for the variable species
+fixed_label: speciesB             # display name for the fixed species
 
 reference:
   fasta: /path/to/reference.fa
@@ -17,23 +21,24 @@ reference:
   # one of: variable | fixed | third_species | unknown
   identity: unknown
 
-# Exact parent plants used in the crosses (genotyped individually).
+# Exact parent individuals used in the crosses (genotyped individually).
+# Two variable-species parents here, each giving rise to its own F1 background.
 variable_parents:
-  - { name: k1, vcf_sample: KUN_parent1 }
-  - { name: k2, vcf_sample: KUN_parent2 }
+  - { name: p1, vcf_sample: SPA_parent1 }
+  - { name: p2, vcf_sample: SPA_parent2 }
 
 fixed_parents:
-  - { name: a1, vcf_sample: AMP_parent1 }
+  - { name: q1, vcf_sample: SPB_parent1 }
 
-# F1 replicates: name, the VCF column (optional), the BAM, and the kunthii
-# background. Three reps per kunthii parent in this design.
+# F1 replicates: name, the VCF column (optional), the BAM, and the
+# variable-species background. Three reps per variable-species parent here.
 f1:
-  - { name: f1_k1_r1, vcf_sample: F1_k1a_1, bam: /path/bams/F1_k1a_1.bam, background: k1 }
-  - { name: f1_k1_r2, vcf_sample: F1_k1a_2, bam: /path/bams/F1_k1a_2.bam, background: k1 }
-  - { name: f1_k1_r3, vcf_sample: F1_k1a_3, bam: /path/bams/F1_k1a_3.bam, background: k1 }
-  - { name: f1_k2_r1, vcf_sample: F1_k2a_1, bam: /path/bams/F1_k2a_1.bam, background: k2 }
-  - { name: f1_k2_r2, vcf_sample: F1_k2a_2, bam: /path/bams/F1_k2a_2.bam, background: k2 }
-  - { name: f1_k2_r3, vcf_sample: F1_k2a_3, bam: /path/bams/F1_k2a_3.bam, background: k2 }
+  - { name: f1_p1_r1, vcf_sample: F1_p1q_1, bam: /path/bams/F1_p1q_1.bam, background: p1 }
+  - { name: f1_p1_r2, vcf_sample: F1_p1q_2, bam: /path/bams/F1_p1q_2.bam, background: p1 }
+  - { name: f1_p1_r3, vcf_sample: F1_p1q_3, bam: /path/bams/F1_p1q_3.bam, background: p1 }
+  - { name: f1_p2_r1, vcf_sample: F1_p2q_1, bam: /path/bams/F1_p2q_1.bam, background: p2 }
+  - { name: f1_p2_r2, vcf_sample: F1_p2q_2, bam: /path/bams/F1_p2q_2.bam, background: p2 }
+  - { name: f1_p2_r3, vcf_sample: F1_p2q_3, bam: /path/bams/F1_p2q_3.bam, background: p2 }
 
 # Optional gene annotation for assigning SNPs to genes (GTF or GFF3, may be .gz).
 gtf: /path/to/annotation.gff3

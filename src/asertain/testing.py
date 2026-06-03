@@ -3,7 +3,8 @@
 Collapses count records to one (variable, fixed) pair *per replicate per gene*,
 then applies the replicate-aware tests from `stats`. The replicate is the unit
 of inference; SNPs within a gene are summed (not treated as independent), and
-the two kunthii backgrounds are summarised separately for a consistency check.
+the variable-species backgrounds are summarised separately for a consistency
+check.
 """
 from __future__ import annotations
 

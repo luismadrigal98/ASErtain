@@ -2,14 +2,15 @@
 
 The whole point of ASErtain's design is that your *cross structure* drives SNP
 selection and statistics. A single config file (YAML or JSON) names the exact
-parent plants and the F1 replicates, and groups F1s by which parent-of-the-
-variable-species (here: kunthii) they descend from. Everything downstream reads
-this object, so the CLI stays terse.
+parent individuals and the F1 replicates, and groups F1s by which parent of the
+variable species they descend from. Everything downstream reads this object, so
+the CLI stays terse.
 
-Terminology (generic, with the Penstemon mapping in parentheses):
-    variable_species  the up-/down-regulated, multi-parent species (kunthii)
-    fixed_species     the single-parent reference species (amphorellae)
-    backgrounds       F1 groupings by variable-species parent (k1, k2, ...)
+Terminology (generic — assign real-world labels in the config):
+    variable_species  the parental lineage carrying the expression difference of
+                      interest, possibly with several cross parents
+    fixed_species     the other parental lineage, typically a single cross parent
+    backgrounds       F1 groupings by variable-species parent (e.g. p1, p2, ...)
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ from typing import Dict, List, Optional
 
 @dataclass
 class Parent:
-    name: str                 # short label, e.g. 'k1'
+    name: str                 # short label, e.g. 'p1'
     vcf_sample: str           # the column name in the VCF
     species: str              # 'variable' or 'fixed'
 
@@ -31,7 +32,7 @@ class F1Replicate:
     name: str                 # short label, e.g. 'f1_k1_r1'
     vcf_sample: Optional[str] # VCF column (may be None if F1s not genotyped)
     bam: str                  # path to sorted, indexed BAM
-    background: str           # which variable-species parent (e.g. 'k1')
+    background: str           # which variable-species parent (e.g. 'p1')
 
 
 @dataclass
@@ -46,10 +47,10 @@ class Reference:
 class CrossConfig:
     project: str
     reference: Reference
-    variable_label: str               # display name, e.g. 'kunthii'
-    fixed_label: str                  # display name, e.g. 'amphorellae'
-    variable_parents: List[Parent]    # the exact variable-species plants (k1, k2)
-    fixed_parents: List[Parent]       # the exact fixed-species plant(s) (amphorellae)
+    variable_label: str               # display name for the variable species
+    fixed_label: str                  # display name for the fixed species
+    variable_parents: List[Parent]    # the exact variable-species individuals
+    fixed_parents: List[Parent]       # the exact fixed-species individual(s)
     f1: List[F1Replicate]
     gtf: Optional[str] = None
     annotation_window: int = 500

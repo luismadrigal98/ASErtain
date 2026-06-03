@@ -2,18 +2,19 @@
 
 This is the module that answers the reviewer's central worry — *which SNPs do we
 trust?* Instead of pooling a whole species and calling fixation by frequency, we
-genotype each named parent plant individually and keep only sites that are:
+genotype each named parent individual separately and keep only sites that are:
 
-    1. homozygous and concordant across all variable-species parents (kunthii),
-    2. homozygous in the fixed-species parent(s) (amphorellae), and
+    1. homozygous and concordant across all variable-species parents,
+    2. homozygous in the fixed-species parent(s), and
     3. fixed for *different* alleles between the two species.
 
-A site where the two kunthii parents disagree (or one is heterozygous) is NOT
-discarded silently — it is reported as 'background_specific', usable only for the
-F1s descending from the parent for which it is cleanly diagnostic. That keeps the
-robust 'shared' set for combined analysis while preserving power per background.
+A site where the variable-species parents disagree (or one is heterozygous) is
+NOT discarded silently — it is reported as 'background_specific', usable only for
+the F1s descending from the parent for which it is cleanly diagnostic. That keeps
+the robust 'shared' set for combined analysis while preserving power per
+background.
 
-Genotype calling tolerates RNA-seq noise: a parent is called homozygous when the
+Genotype calling tolerates sequencing noise: a parent is called homozygous when the
 minor-allele fraction (from AD) is below `maf_threshold`, not strictly 0.
 """
 from __future__ import annotations
@@ -63,7 +64,7 @@ class DiagnoseStats:
 
 
 def call_state(call: SampleCall, *, min_depth: int, maf_threshold: float) -> str:
-    """Classify one parent's genotype, tolerating low-level RNA-seq noise.
+    """Classify one parent's genotype, tolerating low-level sequencing noise.
 
     Prefers allelic depth (AD) when present; otherwise falls back to the GT
     field gated on total depth. Returns HOM_REF / HOM_ALT / HET / MISSING.
@@ -149,8 +150,12 @@ def classify_site(variant: Variant, cfg: CrossConfig, *,
     fixed_nuc = _nuc(fixed_idx, variant.ref, alt)
     callable_names = [p.name for p in cfg.variable_parents
                       if var_idx[p.name] is not None]
-    # 'shared' iff every callable variable parent is diagnostic with one allele
-    shared = (set(bg_variable_allele) == set(callable_names)
+    # 'shared' (safe for every F1 background) requires EVERY variable parent to
+    # be callable (homozygous) AND concordant on one diagnostic allele. If any
+    # variable parent is heterozygous or missing, the site cannot be trusted for
+    # that parent's F1s, so it is background-specific instead.
+    shared = (len(callable_names) == len(cfg.variable_parents)
+              and set(bg_variable_allele) == set(callable_names)
               and len(set(bg_variable_allele.values())) == 1)
 
     if shared:

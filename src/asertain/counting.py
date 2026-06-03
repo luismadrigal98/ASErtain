@@ -1,8 +1,8 @@
 """Allele-specific read counting in F1 BAMs, with pluggable reference-bias modes.
 
-Because we don't yet know whether the F1 reads are mapped to a kunthii,
-amphorellae, or third-species reference, *every* bias strategy is selectable by
-flag and the rest of the pipeline is agnostic to the choice:
+Because the F1 reads may be mapped to either parent's reference or to a
+third-party reference, *every* bias strategy is selectable by flag and the rest
+of the pipeline is agnostic to the choice:
 
     --bias-mode none       null expectation = 0.5; do nothing
     --bias-mode report     null = 0.5, but record variable_is_ref so downstream

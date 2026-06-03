@@ -1,8 +1,8 @@
 """ASErtain — allele-specific expression discovery & validation for F1 hybrids.
 
 A staged toolkit for detecting cis-regulatory divergence from allele-specific
-expression (ASE) in F1 hybrids, designed around the Penstemon kunthii ×
-amphorellae cross but generic to any two-parent / hybrid design.
+expression (ASE) in F1 hybrids. It is organism-agnostic: any two-parent / F1
+design fits by labelling the parental roles in a config file.
 
 Pipeline stages (exposed as `asertain <subcommand>`):
 
