@@ -1,0 +1,40 @@
+# ASErtain cross-design configuration — Penstemon kunthii × amphorellae FLS study
+#
+# The "variable" species is the one with multiple cross parents and the up/down
+# regulation of interest (kunthii); the "fixed" species is the single-parent
+# side (amphorellae). F1 replicates are grouped by which kunthii parent they
+# descend from, via the `background` field, which must match a variable_parents
+# `name`.
+
+project: penstemon_fls_ase
+
+variable_label: kunthii
+fixed_label: amphorellae
+
+reference:
+  fasta: /path/to/reference.fa
+  # which biological entity the reference equals — drives bias bookkeeping.
+  # one of: variable | fixed | third_species | unknown
+  identity: unknown
+
+# Exact parent plants used in the crosses (genotyped individually).
+variable_parents:
+  - { name: k1, vcf_sample: KUN_parent1 }
+  - { name: k2, vcf_sample: KUN_parent2 }
+
+fixed_parents:
+  - { name: a1, vcf_sample: AMP_parent1 }
+
+# F1 replicates: name, the VCF column (optional), the BAM, and the kunthii
+# background. Three reps per kunthii parent in this design.
+f1:
+  - { name: f1_k1_r1, vcf_sample: F1_k1a_1, bam: /path/bams/F1_k1a_1.bam, background: k1 }
+  - { name: f1_k1_r2, vcf_sample: F1_k1a_2, bam: /path/bams/F1_k1a_2.bam, background: k1 }
+  - { name: f1_k1_r3, vcf_sample: F1_k1a_3, bam: /path/bams/F1_k1a_3.bam, background: k1 }
+  - { name: f1_k2_r1, vcf_sample: F1_k2a_1, bam: /path/bams/F1_k2a_1.bam, background: k2 }
+  - { name: f1_k2_r2, vcf_sample: F1_k2a_2, bam: /path/bams/F1_k2a_2.bam, background: k2 }
+  - { name: f1_k2_r3, vcf_sample: F1_k2a_3, bam: /path/bams/F1_k2a_3.bam, background: k2 }
+
+# Optional gene annotation for assigning SNPs to genes (GTF or GFF3, may be .gz).
+gtf: /path/to/annotation.gff3
+annotation_window: 500

@@ -72,6 +72,30 @@ def read_diagnostic_snps(path: str) -> List[Dict]:
     return rows
 
 
+def read_diagnostic_snps_as_objects(path: str) -> List[DiagnosticSNP]:
+    """Reconstruct DiagnosticSNP objects from a diagnose-stage TSV.
+
+    Only the fields needed downstream (counting) are restored; per-parent
+    depths are not round-tripped.
+    """
+    out: List[DiagnosticSNP] = []
+    for row in read_diagnostic_snps(path):
+        shared = row["variable_allele_shared"]
+        out.append(DiagnosticSNP(
+            chrom=row["chrom"], pos=row["pos"], ref=row["ref"], alt=row["alt"],
+            qual=float(row["qual"]),
+            fixed_allele=row["fixed_allele"],
+            variable_allele_shared=None if shared in (".", "") else shared,
+            diagnostic_class=row["diagnostic_class"],
+            backgrounds=row["backgrounds"],
+            bg_variable_allele=row["bg_variable_allele"],
+            gene_id=row.get("gene_id", "intergenic"),
+            gene_name=row.get("gene_name", "intergenic"),
+            location=row.get("location", "intergenic"),
+        ))
+    return out
+
+
 def write_bed(snps: List[DiagnosticSNP], path: str) -> None:
     with open(path, "w") as fh:
         fh.write("# chrom\tstart\tend\tname\tscore\tstrand\n")

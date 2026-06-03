@@ -1,0 +1,82 @@
+"""End-to-end orchestration: `asertain run --config ... --vcf ... --out ...`.
+
+Chains diagnose → count → test → (contrast) → report using a single config and
+output prefix. Each stage still writes its own intermediate TSV so a run can be
+inspected or resumed by hand.
+"""
+from __future__ import annotations
+
+import os
+from typing import Optional
+
+from . import counting, testing, contrast as contrast_mod, report as report_mod
+from .annotation import GeneIndex
+from .config import load_config
+from .genotypes import find_diagnostic_snps
+from .tables import (read_table, write_allele_counts, write_bed,
+                     write_diagnostic_snps, write_table)
+from .testing import GENE_COLS
+from .contrast import CONTRAST_COLS
+
+
+def run_pipeline(config: str, vcf: str, out_prefix: str, *,
+                 parental_de: Optional[str] = None,
+                 bias_mode: str = "report",
+                 control_table: Optional[str] = None,
+                 min_parent_depth: int = 8,
+                 maf_threshold: float = 0.10,
+                 min_qual: float = 30.0,
+                 chrom_filter: Optional[str] = None,
+                 min_mapq: int = 20, min_baseq: int = 20,
+                 min_count_depth: int = 10,
+                 alpha: float = 0.05,
+                 min_effect_log2: float = 0.0,
+                 samtools: str = "samtools") -> dict:
+    cfg = load_config(config)
+    out_dir = os.path.dirname(out_prefix)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    gene_index = GeneIndex.from_file(cfg.gtf) if cfg.gtf else None
+
+    print("[1/5] diagnose: finding diagnostic SNPs ...")
+    snps, dstats = find_diagnostic_snps(
+        cfg, vcf, min_depth=min_parent_depth, maf_threshold=maf_threshold,
+        min_qual=min_qual, chrom_filter=chrom_filter, gene_index=gene_index)
+    write_diagnostic_snps(snps, f"{out_prefix}.diagnostic_snps.tsv", source_vcf=vcf)
+    write_bed(snps, f"{out_prefix}.diagnostic_snps.bed")
+    print(f"      {len(snps)} diagnostic SNPs "
+          f"({dstats.shared} shared, {dstats.background_specific} background-specific)")
+
+    print("[2/5] count: allele-specific counting in F1 BAMs ...")
+    counts = counting.count_f1_samples(
+        cfg, snps, bias_mode=bias_mode, control_table=control_table,
+        min_mapq=min_mapq, min_baseq=min_baseq, min_depth=min_count_depth,
+        samtools=samtools)
+    write_allele_counts(counts, f"{out_prefix}.allele_counts.tsv", bias_mode=bias_mode)
+    print(f"      {len(counts)} SNP×replicate observations")
+
+    print("[3/5] test: replicate-aware gene-level ASE ...")
+    genes = testing.test_genes(counts, alpha=alpha, min_effect_log2=min_effect_log2)
+    write_table(genes, GENE_COLS, f"{out_prefix}.gene_ase.tsv",
+                comment="ASErtain gene-level ASE")
+    n_ase = sum(1 for g in genes if g["ase_call"])
+    print(f"      {len(genes)} genes tested, {n_ase} ASE calls (q<{alpha})")
+
+    if parental_de:
+        print("[4/5] contrast: cis/trans decomposition ...")
+        de = read_table(parental_de)
+        contrasts = contrast_mod.run_contrast(genes, de, ase_alpha=alpha)
+        write_table(contrasts, CONTRAST_COLS, f"{out_prefix}.cis_trans.tsv",
+                    comment="ASErtain cis/trans contrast")
+        print(f"      {len(contrasts)} genes classified")
+    else:
+        print("[4/5] contrast: skipped (no --parental-de)")
+
+    print("[5/5] report: writing HTML summary ...")
+    report_mod.write_report(f"{out_prefix}.gene_ase.tsv",
+                            f"{out_prefix}.report.html",
+                            title=f"ASErtain — {cfg.project}")
+    print(f"      {out_prefix}.report.html")
+    return {"n_snps": len(snps), "n_counts": len(counts),
+            "n_genes": len(genes), "n_ase": n_ase}

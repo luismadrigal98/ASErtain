@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asertain"
+version = "0.1.0"
+description = "Allele-specific expression discovery & validation for F1 hybrids (Penstemon)"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Luis Javier Madrigal-Roca" }]
+license = { text = "MIT" }
+dependencies = [
+    "numpy>=1.21",
+    "scipy>=1.7",
+    "pyyaml>=5.4",
+]
+
+[project.optional-dependencies]
+plots = ["matplotlib>=3.4"]
+
+[project.scripts]
+asertain = "asertain.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
