@@ -87,9 +87,14 @@ def samtools_mpileup(bam: str, region: str, *,
 
 
 def ensure_bam_index(bam: str, samtools: str = "samtools") -> None:
-    """Index a BAM if no .bai/.csi exists alongside it."""
-    if os.path.exists(bam + ".bai") or os.path.exists(bam[:-1] + "i") \
-            or os.path.exists(bam + ".csi"):
+    """Index a BAM if no index exists alongside it.
+
+    Checks the two standard layouts (foo.bam.bai / foo.bam.csi and the
+    splitext form foo.bai) explicitly rather than via string slicing.
+    """
+    stem, _ = os.path.splitext(bam)
+    candidates = (bam + ".bai", bam + ".csi", stem + ".bai", stem + ".csi")
+    if any(os.path.exists(c) for c in candidates):
         return
     run([samtools, "index", bam])
 

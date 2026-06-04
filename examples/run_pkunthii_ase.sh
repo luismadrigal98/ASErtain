@@ -51,8 +51,10 @@ echo "  located $(wc -l < "$WORK/anthocyanin_genes.bed") / $(wc -l < "$WORK/cand
 echo "############ 3. joint variant calling over candidate genes ############"
 # RNA-aware: unique reads only (STAR uniques are MAPQ 255 >= 20); AD+DP kept for
 # ASErtain's genotype calling; biallelic SNPs only.
+# --max-depth high: anthocyanin genes are highly expressed in petals; a low cap
+# would truncate pileups and bias the allele ratio (audit m4).
 bcftools mpileup -f "$REF" -R "$WORK/anthocyanin_genes.bed" -b "$WORK/bamlist.txt" \
-        -a AD,DP --min-MQ 20 --min-BQ 20 --max-depth 5000 -Ou \
+        -a AD,DP --min-MQ 20 --min-BQ 20 --max-depth 100000 -Ou \
   | bcftools call -mv -Ou \
   | bcftools norm -f "$REF" -Ou \
   | bcftools view -v snps -m2 -M2 -Oz -o "$WORK/anthocyanin.vcf.gz"

@@ -78,12 +78,16 @@ def count_alleles(bam: str, chrom: str, pos: int,
     fields = out.split("\t")
     if len(fields) < 5:
         return empty
-    ref_base, depth, pile = fields[2], int(fields[3]), fields[4]
+    ref_base, raw_depth, pile = fields[2], int(fields[3]), fields[4]
     calls = parse_pileup_bases(ref_base, pile)
     v = calls.count(variable_allele.upper())
     f = calls.count(fixed_allele.upper())
+    # total_depth is the number of usable base calls (excludes intron skips <>,
+    # deletions * and indel padding that parse_pileup_bases drops). The raw
+    # mpileup column-4 depth would over-count for spliced RNA reads (audit C1).
     return {"variable_count": v, "fixed_count": f,
-            "other_count": len(calls) - v - f, "total_depth": depth}
+            "other_count": len(calls) - v - f,
+            "total_depth": len(calls), "raw_depth": raw_depth}
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +129,11 @@ def count_flowers(cfg: CrossConfig, snps: List[InformativeSNP], *,
                   progress: bool = True) -> List[Dict]:
     """Count alleles for every (flower × SNP informative for its plant)."""
     reference = cfg.reference.fasta
+    if not reference:
+        raise ValueError(
+            "Counting requires a reference FASTA (config reference.fasta). "
+            "Without it, mpileup '.'/',' match symbols cannot be resolved to a "
+            "base and the reference allele would be silently miscounted.")
     control = (load_control_bias(control_table)
                if bias_mode == "null-shift" and control_table else None)
     if bias_mode == "null-shift" and control is None:
@@ -153,7 +162,9 @@ def count_flowers(cfg: CrossConfig, snps: List[InformativeSNP], *,
                     fl.bam, snp.chrom, snp.pos, pa.variable, pa.fixed,
                     min_mapq=min_mapq, min_baseq=min_baseq,
                     reference=reference, samtools=samtools)
-                if counts["total_depth"] < min_depth:
+                # Filter on allele-bearing reads, not raw/usable depth: a SNP is
+                # only informative through reads that carry one of the two alleles.
+                if counts["variable_count"] + counts["fixed_count"] < min_depth:
                     continue
                 records.append({
                     "flower": fl.name,

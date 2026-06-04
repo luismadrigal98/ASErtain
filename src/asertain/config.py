@@ -113,6 +113,20 @@ class CrossConfig:
     def plants_in_background(self, bg: str) -> List[F1Plant]:
         return [pl for pl in self.f1_plants if pl.bg == bg]
 
+    def variable_parent_of(self, plant: F1Plant) -> str:
+        """The variable-lineage parent of this F1 (by lineage, not by sex)."""
+        for n in (plant.mother, plant.father):
+            if self.parent(n).lineage == VARIABLE:
+                return n
+        raise KeyError(f"F1 plant '{plant.name}' has no variable-lineage parent")
+
+    def fixed_parent_of(self, plant: F1Plant) -> str:
+        """The fixed-lineage parent of this F1 (by lineage, not by sex)."""
+        for n in (plant.mother, plant.father):
+            if self.parent(n).lineage == FIXED:
+                return n
+        raise KeyError(f"F1 plant '{plant.name}' has no fixed-lineage parent")
+
 
 # ---------------------------------------------------------------------------
 # Loading
@@ -195,11 +209,26 @@ def _validate(cfg: CrossConfig) -> None:
     if not cfg.f1_plants:
         errs.append("no F1 plants defined")
     names = {p.name for p in cfg.parents}
+    lineage = {p.name: p.lineage for p in cfg.parents}
     for pl in cfg.f1_plants:
+        ok = True
         if pl.mother not in names:
             errs.append(f"F1 plant '{pl.name}': mother '{pl.mother}' is not a parent")
+            ok = False
         if pl.father not in names:
             errs.append(f"F1 plant '{pl.name}': father '{pl.father}' is not a parent")
+            ok = False
+        # The two parents must be one variable + one fixed lineage, in either
+        # sex role — otherwise variable/fixed alleles would be assigned wrong
+        # (audit M2). This makes reciprocal crosses safe and forbids same-lineage
+        # 'F1's being analysed as inter-lineage hybrids.
+        if ok:
+            ls = sorted({lineage[pl.mother], lineage[pl.father]})
+            if ls != [FIXED, VARIABLE]:
+                errs.append(
+                    f"F1 plant '{pl.name}': parents must be one '{VARIABLE}' and "
+                    f"one '{FIXED}' lineage; got mother={lineage[pl.mother]}, "
+                    f"father={lineage[pl.father]}")
         if not pl.flowers:
             errs.append(f"F1 plant '{pl.name}' has no flowers")
     if errs:

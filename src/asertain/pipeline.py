@@ -31,6 +31,7 @@ def run_pipeline(config: str, vcf: str, out_prefix: str, *,
                  min_count_depth: int = 10,
                  alpha: float = 0.05,
                  min_effect_log2: float = 0.0,
+                 min_plants: int = 2,
                  samtools: str = "samtools") -> dict:
     cfg = load_config(config)
     out_dir = os.path.dirname(out_prefix)
@@ -57,7 +58,10 @@ def run_pipeline(config: str, vcf: str, out_prefix: str, *,
     print(f"      {len(counts)} SNP×flower observations")
 
     print("[3/5] test: nested (flower→plant) gene-level ASE ...")
-    genes = testing.test_genes(counts, alpha=alpha, min_effect_log2=min_effect_log2)
+    genes = testing.test_genes(
+        counts, alpha=alpha, min_effect_log2=min_effect_log2,
+        min_plants=min_plants,
+        ref_is_variable=(cfg.reference.identity == "variable"))
     write_table(genes, GENE_COLS, f"{out_prefix}.gene_ase.tsv",
                 comment="ASErtain gene-level ASE")
     n_ase = sum(1 for g in genes if g["ase_call"])

@@ -66,6 +66,11 @@ def _add_test_opts(p: argparse.ArgumentParser) -> None:
                    help="FDR threshold for ASE calls (default: 0.05)")
     g.add_argument("--min-effect-log2", type=float, default=0.0,
                    help="Min |log2 allelic ratio| to call ASE (default: 0)")
+    g.add_argument("--min-plants", type=int, default=2,
+                   help="Min F1 plants (biological replicates) for a call (default: 2)")
+    g.add_argument("--ref-is-variable", action="store_true",
+                   help="Reference equals the variable lineage; flags genes whose "
+                        "fixed allele is never seen as possible mapping artefacts")
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +154,9 @@ def cmd_test(args) -> int:
     _ensure_out_dir(args.out)
     counts = read_allele_counts(args.counts)
     genes = test_genes(counts, alpha=args.alpha,
-                       min_effect_log2=args.min_effect_log2)
+                       min_effect_log2=args.min_effect_log2,
+                       min_plants=args.min_plants,
+                       ref_is_variable=args.ref_is_variable)
     write_table(genes, GENE_COLS, f"{args.out}.gene_ase.tsv",
                 comment="ASErtain gene-level ASE")
     n_ase = sum(1 for g in genes if g["ase_call"])
@@ -195,7 +202,8 @@ def cmd_run(args) -> int:
         min_qual=args.min_qual, chrom_filter=args.chrom_filter,
         min_mapq=args.min_mapq, min_baseq=args.min_baseq,
         min_count_depth=args.min_count_depth, alpha=args.alpha,
-        min_effect_log2=args.min_effect_log2, samtools=args.samtools)
+        min_effect_log2=args.min_effect_log2, min_plants=args.min_plants,
+        samtools=args.samtools)
     return 0
 
 
