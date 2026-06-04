@@ -75,8 +75,8 @@ def _add_test_opts(p: argparse.ArgumentParser) -> None:
 def cmd_diagnose(args) -> int:
     from .annotation import GeneIndex
     from .config import load_config
-    from .genotypes import find_diagnostic_snps
-    from .tables import write_bed, write_diagnostic_snps
+    from .genotypes import find_informative_snps
+    from .tables import write_bed, write_informative_snps
 
     cfg = load_config(args.config)
     _ensure_out_dir(args.out)
@@ -84,40 +84,61 @@ def cmd_diagnose(args) -> int:
     if gene_index:
         print(f"Loaded {gene_index.n_genes} genes for annotation")
 
-    snps, stats = find_diagnostic_snps(
+    snps, stats = find_informative_snps(
         cfg, args.vcf,
         min_depth=args.min_parent_depth, maf_threshold=args.maf_threshold,
         min_qual=args.min_qual, chrom_filter=args.chrom_filter,
         gene_index=gene_index)
 
-    write_diagnostic_snps(snps, f"{args.out}.diagnostic_snps.tsv", source_vcf=args.vcf)
-    write_bed(snps, f"{args.out}.diagnostic_snps.bed")
-    print(f"Variants scanned        : {stats.total}")
-    print(f"Biallelic SNPs          : {stats.biallelic_snp}")
-    print(f"Fixed in fixed-species  : {stats.fixed_in_fixed_species}")
-    print(f"Diagnostic SNPs         : {len(snps)}")
-    print(f"  shared (all F1s)      : {stats.shared}")
-    print(f"  background-specific   : {stats.background_specific}")
-    print(f"Wrote {args.out}.diagnostic_snps.tsv / .bed")
+    write_informative_snps(snps, f"{args.out}.informative_snps.tsv", source_vcf=args.vcf)
+    write_bed(snps, f"{args.out}.informative_snps.bed")
+    print(f"Variants scanned       : {stats.total}")
+    print(f"Biallelic SNPs         : {stats.biallelic_snp}")
+    print(f"Informative SNPs       : {stats.informative}")
+    print(f"  shared (all plants)  : {stats.shared}")
+    print(f"  plant-specific       : {stats.plant_specific}")
+    print(f"Wrote {args.out}.informative_snps.tsv / .bed")
     return 0
 
 
 def cmd_count(args) -> int:
     from .config import load_config
-    from .counting import count_f1_samples
-    from .tables import read_diagnostic_snps_as_objects, write_allele_counts
+    from .counting import count_flowers
+    from .tables import read_informative_snps, write_allele_counts
 
     cfg = load_config(args.config)
     _ensure_out_dir(args.out)
-    snps = read_diagnostic_snps_as_objects(args.snps)
-    print(f"Loaded {len(snps)} diagnostic SNPs from {args.snps}")
-    records = count_f1_samples(
+    snps = read_informative_snps(args.snps)
+    print(f"Loaded {len(snps)} informative SNPs from {args.snps}")
+    records = count_flowers(
         cfg, snps, bias_mode=args.bias_mode, control_table=args.control_table,
         min_mapq=args.min_mapq, min_baseq=args.min_baseq,
         min_depth=args.min_count_depth, samtools=args.samtools)
     write_allele_counts(records, f"{args.out}.allele_counts.tsv",
                         bias_mode=args.bias_mode)
     print(f"Wrote {len(records)} observations to {args.out}.allele_counts.tsv")
+    return 0
+
+
+def cmd_mask_reference(args) -> int:
+    from .config import load_config
+    from .bias import nmask_reference, write_wasp_snp_files
+    from .tables import read_informative_snps
+
+    cfg = load_config(args.config)
+    ref = args.reference or cfg.reference.fasta
+    if not ref:
+        raise ValueError("No reference FASTA given (--reference or config reference.fasta)")
+    snps = read_informative_snps(args.snps)
+    print(f"Loaded {len(snps)} informative SNPs from {args.snps}")
+    if args.wasp_dir:
+        files = write_wasp_snp_files(snps, args.wasp_dir)
+        print(f"Wrote {len(files)} WASP SNP files to {args.wasp_dir}/")
+    masked = nmask_reference(ref, snps, args.out_fasta)
+    total = sum(masked.values())
+    print(f"N-masked {total} positions across {len(masked)} sequences -> {args.out_fasta}")
+    print("Next: re-align F1 reads to this reference, then "
+          "`asertain count --bias-mode nmask`.")
     return 0
 
 
@@ -188,15 +209,18 @@ def cmd_check(args) -> int:
           f"{[p.name for p in cfg.variable_parents]}")
     print(f"  fixed ({cfg.fixed_label}) parents     : "
           f"{[p.name for p in cfg.fixed_parents]}")
-    print(f"  F1 backgrounds: {cfg.backgrounds}")
+    for bg in cfg.backgrounds_present():
+        plants = cfg.plants_in_background(bg)
+        n_fl = sum(len(pl.flowers) for pl in plants)
+        print(f"  background {bg}: {len(plants)} F1 plants, {n_fl} flowers")
     print(f"  reference identity: {cfg.reference.identity}")
     print("Tool check:")
     external.check_tool(args.samtools)
-    missing = [r.name for r in cfg.f1 if not os.path.exists(r.bam)]
+    missing = [fl.name for fl in cfg.flowers if not os.path.exists(fl.bam)]
     if missing:
-        print(f"  ✗ missing BAMs for: {missing}")
+        print(f"  ✗ missing BAMs for flowers: {missing}")
         return 1
-    print("  ✓ all F1 BAMs present")
+    print(f"  ✓ all {len(cfg.flowers)} flower BAMs present")
     return 0
 
 
@@ -213,7 +237,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     # diagnose
-    d = sub.add_parser("diagnose", help="find diagnostic SNPs from parent genotypes")
+    d = sub.add_parser("diagnose", help="find informative SNPs (phased per F1 plant)")
     d.add_argument("--config", required=True)
     d.add_argument("--vcf", required=True)
     d.add_argument("--out", required=True, help="output prefix")
@@ -221,16 +245,28 @@ def build_parser() -> argparse.ArgumentParser:
     d.set_defaults(func=cmd_diagnose)
 
     # count
-    c = sub.add_parser("count", help="count allele-specific reads in F1 BAMs")
+    c = sub.add_parser("count", help="count allele-specific reads in F1 flower BAMs")
     c.add_argument("--config", required=True)
-    c.add_argument("--snps", required=True, help="diagnose-stage .diagnostic_snps.tsv")
+    c.add_argument("--snps", required=True, help="diagnose-stage .informative_snps.tsv")
     c.add_argument("--out", required=True, help="output prefix")
     _add_bias_opts(c)
     _add_count_opts(c)
     c.set_defaults(func=cmd_count)
 
+    # mask-reference
+    m = sub.add_parser("mask-reference",
+                       help="write an N-masked reference (+ WASP SNP files) for de-biasing")
+    m.add_argument("--config", required=True)
+    m.add_argument("--snps", required=True, help="diagnose-stage .informative_snps.tsv")
+    m.add_argument("--out-fasta", required=True, help="path for the N-masked FASTA")
+    m.add_argument("--reference", default=None,
+                   help="reference FASTA (defaults to config reference.fasta)")
+    m.add_argument("--wasp-dir", default=None,
+                   help="also write per-chromosome WASP SNP files to this dir")
+    m.set_defaults(func=cmd_mask_reference)
+
     # test
-    t = sub.add_parser("test", help="replicate-aware gene-level ASE statistics")
+    t = sub.add_parser("test", help="nested (flower→plant) gene-level ASE statistics")
     t.add_argument("--counts", required=True, help="count-stage .allele_counts.tsv")
     t.add_argument("--out", required=True, help="output prefix")
     _add_test_opts(t)

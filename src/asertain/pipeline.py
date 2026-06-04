@@ -12,9 +12,9 @@ from typing import Optional
 from . import counting, testing, contrast as contrast_mod, report as report_mod
 from .annotation import GeneIndex
 from .config import load_config
-from .genotypes import find_diagnostic_snps
+from .genotypes import find_informative_snps
 from .tables import (read_table, write_allele_counts, write_bed,
-                     write_diagnostic_snps, write_table)
+                     write_informative_snps, write_table)
 from .testing import GENE_COLS
 from .contrast import CONTRAST_COLS
 
@@ -39,24 +39,24 @@ def run_pipeline(config: str, vcf: str, out_prefix: str, *,
 
     gene_index = GeneIndex.from_file(cfg.gtf) if cfg.gtf else None
 
-    print("[1/5] diagnose: finding diagnostic SNPs ...")
-    snps, dstats = find_diagnostic_snps(
+    print("[1/5] diagnose: finding informative SNPs ...")
+    snps, dstats = find_informative_snps(
         cfg, vcf, min_depth=min_parent_depth, maf_threshold=maf_threshold,
         min_qual=min_qual, chrom_filter=chrom_filter, gene_index=gene_index)
-    write_diagnostic_snps(snps, f"{out_prefix}.diagnostic_snps.tsv", source_vcf=vcf)
-    write_bed(snps, f"{out_prefix}.diagnostic_snps.bed")
-    print(f"      {len(snps)} diagnostic SNPs "
-          f"({dstats.shared} shared, {dstats.background_specific} background-specific)")
+    write_informative_snps(snps, f"{out_prefix}.informative_snps.tsv", source_vcf=vcf)
+    write_bed(snps, f"{out_prefix}.informative_snps.bed")
+    print(f"      {len(snps)} informative SNPs "
+          f"({dstats.shared} shared, {dstats.plant_specific} plant-specific)")
 
-    print("[2/5] count: allele-specific counting in F1 BAMs ...")
-    counts = counting.count_f1_samples(
+    print("[2/5] count: allele-specific counting in F1 flowers ...")
+    counts = counting.count_flowers(
         cfg, snps, bias_mode=bias_mode, control_table=control_table,
         min_mapq=min_mapq, min_baseq=min_baseq, min_depth=min_count_depth,
         samtools=samtools)
     write_allele_counts(counts, f"{out_prefix}.allele_counts.tsv", bias_mode=bias_mode)
-    print(f"      {len(counts)} SNP×replicate observations")
+    print(f"      {len(counts)} SNP×flower observations")
 
-    print("[3/5] test: replicate-aware gene-level ASE ...")
+    print("[3/5] test: nested (flower→plant) gene-level ASE ...")
     genes = testing.test_genes(counts, alpha=alpha, min_effect_log2=min_effect_log2)
     write_table(genes, GENE_COLS, f"{out_prefix}.gene_ase.tsv",
                 comment="ASErtain gene-level ASE")

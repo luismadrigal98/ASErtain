@@ -69,10 +69,10 @@ def write_report(gene_ase_tsv: str, out_html: str, *,
 
     rows = "\n".join(
         "<tr>" + "".join(f"<td>{html.escape(str(g.get(c, '')))}</td>"
-                         for c in ("gene_id", "gene_name", "n_snps", "n_reps",
+                         for c in ("gene_id", "gene_name", "n_snps", "n_plants",
                                    "log2_ratio", "p_primary", "q_value",
                                    "direction", "consistent_backgrounds",
-                                   "ase_call")) + "</tr>"
+                                   "fixed_allele_seen", "ase_call")) + "</tr>"
         for g in genes[:500]
     )
     img = (f'<img src="{os.path.basename(plotted)}" style="max-width:500px">'
@@ -91,8 +91,9 @@ variable-biased: {counts['variable_biased']} &nbsp;|&nbsp;
 fixed-biased: {counts['fixed_biased']}</p>
 {img}
 <h2>Per-gene results (first 500)</h2>
-<table><tr><th>gene_id</th><th>name</th><th>nSNP</th><th>nRep</th>
-<th>log2</th><th>p</th><th>q</th><th>dir</th><th>consistent</th><th>ASE</th></tr>
+<table><tr><th>gene_id</th><th>name</th><th>nSNP</th><th>nPlant</th>
+<th>log2</th><th>p</th><th>q</th><th>dir</th><th>consistent</th>
+<th>fixedSeen</th><th>ASE</th></tr>
 {rows}</table></body></html>"""
     with open(out_html, "w") as fh:
         fh.write(doc)

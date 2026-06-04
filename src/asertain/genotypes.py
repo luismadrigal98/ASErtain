@@ -106,38 +106,55 @@ def informative_for_plant(mother: Optional[Set[str]],
     """Resolve the maternal (variable) and paternal (fixed) allele for one F1.
 
     `mother`/`father`/`f1` are allele-index sets ({'0'}, {'1'}, {'0','1'}) or
-    None when the genotype is missing. Returns a PlantAllele or None.
+    None when the genotype is missing.
+
+    RNA-seq subtlety: genotypes here come from *expression*, so a heterozygous
+    site under strong allelic imbalance can be called homozygous. Phase is
+    therefore taken from the **parents** (a genetic fact, independent of the F1's
+    expression), and the F1 genotype is used only to *observe* which allele it
+    carries — never to demand that it look heterozygous. This deliberately keeps
+    the strongest-ASE sites instead of discarding them.
     """
     def nuc(idx: str) -> str:
         return ref if idx == "0" else alt
 
     hom = ({"0"}, {"1"})
-    f1_het = f1 == {"0", "1"}
 
-    # Strongest tier: both parents homozygous for different alleles.
+    # Strongest tier: both parents homozygous for different alleles. Inheritance
+    # fixes both contributed alleles, so this needs no F1 genotype at all (and
+    # must NOT be vetoed by an F1 that merely *looks* homozygous due to ASE).
     if mother in hom and father in hom and mother != father:
-        if f1 is not None and not f1_het:
-            return None                      # genotype conflicts with expectation
         return PlantAllele(variable=nuc(next(iter(mother))),
                            fixed=nuc(next(iter(father))), tier="both_hom")
 
-    # Phased tiers require a heterozygous F1 genotype.
-    if not f1_het:
-        return None
-
-    if father in hom:                        # paternal allele fixed -> maternal known
+    # Father homozygous: paternal (fixed) allele is fixed; the F1's variable
+    # allele is whichever OTHER allele it carries. An F1 called homozygous for a
+    # non-paternal allele (extreme variable-biased ASE) is still rescued here.
+    if father in hom:
         pat = next(iter(father))
-        mat = "1" if pat == "0" else "0"
-        if mother is not None and mat not in mother:
-            return None                      # mother cannot transmit the maternal allele
-        return PlantAllele(variable=nuc(mat), fixed=nuc(pat), tier="phased")
-
-    if mother in hom:                        # maternal allele fixed -> paternal known
-        mat = next(iter(mother))
-        pat = "1" if mat == "0" else "0"
-        if father is not None and pat not in father:
+        if f1 is None:
             return None
-        return PlantAllele(variable=nuc(mat), fixed=nuc(pat), tier="phased")
+        others = f1 - {pat}
+        if len(others) != 1:                 # F1 shows only the paternal allele -> can't phase
+            return None
+        w = next(iter(others))
+        if mother is not None and w not in mother:
+            return None                      # inconsistent with the mother's genotype
+        return PlantAllele(variable=nuc(w), fixed=nuc(pat), tier="phased")
+
+    # Mother homozygous: maternal (variable) allele is fixed; the F1's fixed
+    # allele is whichever OTHER allele it carries.
+    if mother in hom:
+        mat = next(iter(mother))
+        if f1 is None:
+            return None
+        others = f1 - {mat}
+        if len(others) != 1:
+            return None
+        w = next(iter(others))
+        if father is not None and w not in father:
+            return None
+        return PlantAllele(variable=nuc(mat), fixed=nuc(w), tier="phased")
 
     return None                              # both heterozygous / ambiguous phase
 
@@ -175,7 +192,6 @@ def classify_site(variant: Variant, cfg: CrossConfig, *,
 
     # 'shared' iff every F1 plant is informative and concordant on the alleles.
     all_plants = {pl.name for pl in cfg.f1_plants}
-    vari(0)  # placeholder removed below
     return _build(variant, alt, per_plant, all_plants, cfg, stats)
 
 

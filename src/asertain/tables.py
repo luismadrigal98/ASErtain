@@ -1,116 +1,99 @@
 """Read/write contracts for the TSV files passed between pipeline stages.
 
 Centralising the column layouts here keeps `diagnose`, `count`, `test`, and
-`contrast` decoupled: each stage only needs to agree on these readers/writers.
-All tables are tab-separated with a single header line and a leading comment
-block (#) describing provenance.
+`contrast` decoupled. All tables are tab-separated with a single header line and
+a leading comment block (#) describing provenance.
 """
 from __future__ import annotations
 
 import csv
-from typing import Dict, Iterator, List, Optional
+from typing import Dict, List
 
-from .genotypes import DiagnosticSNP
+from .genotypes import InformativeSNP, PlantAllele
 
 
 # ---------------------------------------------------------------------------
-# Diagnostic SNPs
+# Informative SNPs (diagnose stage)
 # ---------------------------------------------------------------------------
 
-_DIAG_COLS = [
+_SNP_COLS = [
     "chrom", "pos", "ref", "alt", "qual",
-    "fixed_allele", "variable_allele_shared", "diagnostic_class",
-    "backgrounds", "bg_variable_allele",
-    "parent_states", "gene_id", "gene_name", "location",
+    "classification", "n_plants", "backgrounds", "per_plant",
+    "gene_id", "gene_name", "location",
 ]
 
 
-def _encode_bg_alleles(d: Dict[str, str]) -> str:
-    return ";".join(f"{k}:{v}" for k, v in sorted(d.items())) or "."
+def _encode_per_plant(d: Dict[str, PlantAllele]) -> str:
+    # plant:variableNuc/fixedNuc/tier ; ...
+    return ";".join(f"{name}:{pa.variable}/{pa.fixed}/{pa.tier}"
+                    for name, pa in sorted(d.items())) or "."
 
 
-def _decode_bg_alleles(s: str) -> Dict[str, str]:
+def _decode_per_plant(s: str) -> Dict[str, PlantAllele]:
+    out: Dict[str, PlantAllele] = {}
     if not s or s == ".":
-        return {}
-    return dict(kv.split(":", 1) for kv in s.split(";") if ":" in kv)
-
-
-def write_diagnostic_snps(snps: List[DiagnosticSNP], path: str,
-                          *, source_vcf: str = "") -> None:
-    with open(path, "w", newline="") as fh:
-        fh.write(f"# ASErtain diagnostic SNPs\n# source_vcf: {source_vcf}\n")
-        w = csv.writer(fh, delimiter="\t")
-        w.writerow(_DIAG_COLS)
-        for s in snps:
-            states = ";".join(f"{k}={v}" for k, v in sorted(s.parent_states.items()))
-            w.writerow([
-                s.chrom, s.pos, s.ref, s.alt, f"{s.qual:.2f}",
-                s.fixed_allele, s.variable_allele_shared or ".",
-                s.diagnostic_class, ",".join(s.backgrounds),
-                _encode_bg_alleles(s.bg_variable_allele),
-                states, s.gene_id, s.gene_name, s.location,
-            ])
-
-
-def read_diagnostic_snps(path: str) -> List[Dict]:
-    """Return diagnostic SNPs as plain dicts (with parsed compound fields)."""
-    rows: List[Dict] = []
-    with open(path) as fh:
-        for line in fh:
-            if line.startswith("#"):
-                continue
-            header = line.rstrip("\n").split("\t")
-            break
-        r = csv.DictReader((l for l in fh if not l.startswith("#")),
-                           fieldnames=header, delimiter="\t")
-        for row in r:
-            row["pos"] = int(row["pos"])
-            row["backgrounds"] = (row["backgrounds"].split(",")
-                                  if row["backgrounds"] else [])
-            row["bg_variable_allele"] = _decode_bg_alleles(row["bg_variable_allele"])
-            rows.append(row)
-    return rows
-
-
-def read_diagnostic_snps_as_objects(path: str) -> List[DiagnosticSNP]:
-    """Reconstruct DiagnosticSNP objects from a diagnose-stage TSV.
-
-    Only the fields needed downstream (counting) are restored; per-parent
-    depths are not round-tripped.
-    """
-    out: List[DiagnosticSNP] = []
-    for row in read_diagnostic_snps(path):
-        shared = row["variable_allele_shared"]
-        out.append(DiagnosticSNP(
-            chrom=row["chrom"], pos=row["pos"], ref=row["ref"], alt=row["alt"],
-            qual=float(row["qual"]),
-            fixed_allele=row["fixed_allele"],
-            variable_allele_shared=None if shared in (".", "") else shared,
-            diagnostic_class=row["diagnostic_class"],
-            backgrounds=row["backgrounds"],
-            bg_variable_allele=row["bg_variable_allele"],
-            gene_id=row.get("gene_id", "intergenic"),
-            gene_name=row.get("gene_name", "intergenic"),
-            location=row.get("location", "intergenic"),
-        ))
+        return out
+    for tok in s.split(";"):
+        name, rest = tok.split(":", 1)
+        var, fix, tier = rest.split("/")
+        out[name] = PlantAllele(variable=var, fixed=fix, tier=tier)
     return out
 
 
-def write_bed(snps: List[DiagnosticSNP], path: str) -> None:
+def write_informative_snps(snps: List[InformativeSNP], path: str,
+                           *, source_vcf: str = "") -> None:
+    with open(path, "w", newline="") as fh:
+        fh.write(f"# ASErtain informative SNPs\n# source_vcf: {source_vcf}\n")
+        w = csv.writer(fh, delimiter="\t")
+        w.writerow(_SNP_COLS)
+        for s in snps:
+            w.writerow([
+                s.chrom, s.pos, s.ref, s.alt, f"{s.qual:.2f}",
+                s.classification, len(s.per_plant), ",".join(s.backgrounds),
+                _encode_per_plant(s.per_plant),
+                s.gene_id, s.gene_name, s.location,
+            ])
+
+
+def read_informative_snps(path: str) -> List[InformativeSNP]:
+    out: List[InformativeSNP] = []
+    with open(path) as fh:
+        header = None
+        for line in fh:
+            if line.startswith("#"):
+                continue
+            if header is None:
+                header = line.rstrip("\n").split("\t")
+                continue
+            row = dict(zip(header, line.rstrip("\n").split("\t")))
+            out.append(InformativeSNP(
+                chrom=row["chrom"], pos=int(row["pos"]),
+                ref=row["ref"], alt=row["alt"], qual=float(row["qual"]),
+                per_plant=_decode_per_plant(row["per_plant"]),
+                classification=row["classification"],
+                backgrounds=row["backgrounds"].split(",") if row["backgrounds"] else [],
+                gene_id=row.get("gene_id", "intergenic"),
+                gene_name=row.get("gene_name", "intergenic"),
+                location=row.get("location", "intergenic"),
+            ))
+    return out
+
+
+def write_bed(snps: List[InformativeSNP], path: str) -> None:
     with open(path, "w") as fh:
         fh.write("# chrom\tstart\tend\tname\tscore\tstrand\n")
         for s in snps:
-            name = f"{s.chrom}:{s.pos}_{s.fixed_allele}|{s.diagnostic_class}"
+            name = f"{s.chrom}:{s.pos}_{s.classification}"
             fh.write(f"{s.chrom}\t{s.pos - 1}\t{s.pos}\t{name}\t{s.qual:.0f}\t.\n")
 
 
 # ---------------------------------------------------------------------------
-# Allele counts (count stage output)
+# Allele counts (count stage)
 # ---------------------------------------------------------------------------
 
 COUNT_COLS = [
-    "f1_sample", "background", "chrom", "pos", "snp_id",
-    "variable_allele", "fixed_allele", "variable_is_ref",
+    "flower", "plant", "background", "chrom", "pos", "snp_id",
+    "variable_allele", "fixed_allele", "variable_is_ref", "tier",
     "variable_count", "fixed_count", "other_count", "total_depth",
     "null_p", "gene_id", "gene_name",
 ]
@@ -130,8 +113,7 @@ def write_allele_counts(records: List[Dict], path: str,
 def read_allele_counts(path: str) -> List[Dict]:
     rows: List[Dict] = []
     with open(path) as fh:
-        data_lines = (l for l in fh if not l.startswith("#"))
-        r = csv.DictReader(data_lines, delimiter="\t")
+        r = csv.DictReader((l for l in fh if not l.startswith("#")), delimiter="\t")
         for row in r:
             for c in ("pos", "variable_count", "fixed_count",
                       "other_count", "total_depth"):
@@ -159,5 +141,5 @@ def write_table(records: List[Dict], cols: List[str], path: str,
 
 def read_table(path: str) -> List[Dict]:
     with open(path) as fh:
-        data = (l for l in fh if not l.startswith("#"))
-        return list(csv.DictReader(data, delimiter="\t"))
+        return list(csv.DictReader((l for l in fh if not l.startswith("#")),
+                                   delimiter="\t"))
