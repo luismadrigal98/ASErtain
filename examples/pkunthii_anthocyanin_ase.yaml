@@ -1,0 +1,55 @@
+# ASErtain config — Penstemon kunthii x amphorellae, anthocyanin/FLS ASE
+#
+# Real study (Haylee's data). Corolla/petal tissue (the FLS-relevant tissue).
+# Reference IS P. kunthii (PGA assembly), so identity: variable and the
+# amphorellae allele will under-map — start with --bias-mode report.
+#
+# Replication (per metadata, confirmed): each F1 cross is ONE plant sampled as
+# three corolla flowers (technical reps). Biological n = 2 F1 genomes (one per
+# kunthii parent). Flowers collapse to their plant in the test; the two F1
+# genomes (k2xa, k3xa) are the cross-background consistency check.
+#
+# VCF columns are produced by examples/run_pkunthii_ase.sh, which merges each
+# genotyping unit's RNA flowers into one BAM (pooled depth -> better genotypes):
+#   k2, k3, amphorellae  = pooled parent corolla flowers
+#   F1_k2a1, F1_k3a1     = pooled F1 corolla flowers (one genome per cross)
+#
+# Paths are relative to the data directory (For_Luis_from_Haylee/); run asertain
+# from there:  asertain run --config <this file> --vcf work/anthocyanin.vcf.gz ...
+
+project: pkunthii_anthocyanin_ase
+
+variable_label: kunthii
+fixed_label: amphorellae
+
+reference:
+  fasta: PGA_assembly_shortnames.fasta
+  identity: variable          # reference == one kunthii genome
+
+parents:
+  - { name: k2,          vcf_sample: k2,          lineage: variable }
+  - { name: k3,          vcf_sample: k3,          lineage: variable }
+  - { name: amphorellae, vcf_sample: amphorellae, lineage: fixed }
+
+f1_plants:
+  - name: F1_k2a1                 # k2 (mother) x amphorellae (father)
+    mother: k2
+    father: amphorellae
+    vcf_sample: F1_k2a1
+    background: k2
+    flowers:
+      - { name: k2a1_y1_11,  bam: BAM_files/k2a_f1_cor_11_Aligned.bam }
+      - { name: k2a1_y2_13,  bam: BAM_files/k2a_f1_cor_13_Aligned.bam }
+      - { name: k2a1_y3_15B, bam: BAM_files/k2a_f1_cor_15B_Aligned.bam }
+  - name: F1_k3a1                 # k3 (mother) x amphorellae (father)
+    mother: k3
+    father: amphorellae
+    vcf_sample: F1_k3a1
+    background: k3
+    flowers:
+      - { name: k3a1_x1_17,  bam: BAM_files/k3a_f1_cor_17_Aligned.bam }
+      - { name: k3a1_x2_19B, bam: BAM_files/k3a_f1_cor_19B_Aligned.bam }
+      - { name: k3a1_x3_21,  bam: BAM_files/k3a_f1_cor_21_Aligned.bam }
+
+gtf: Pkunthii_annotation_viaHelixer.gff
+annotation_window: 0
