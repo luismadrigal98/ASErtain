@@ -1,74 +1,79 @@
-"""Diagnostic-SNP discovery from exact-parent genotypes.
+"""Informative-SNP discovery for outbred parents, resolved per F1 individual.
 
-This is the module that answers the reviewer's central worry — *which SNPs do we
-trust?* Instead of pooling a whole species and calling fixation by frequency, we
-genotype each named parent individual separately and keep only sites that are:
+With outbred (heterozygous) parents there is rarely a site "fixed between
+species". What we need instead is *phase*: at a heterozygous F1 site, which
+allele is maternal (variable lineage) and which is paternal (fixed lineage)?
+That is resolved per F1 plant from its own genotype plus its two named parents:
 
-    1. homozygous and concordant across all variable-species parents,
-    2. homozygous in the fixed-species parent(s), and
-    3. fixed for *different* alleles between the two species.
+    * both parents homozygous for different alleles  -> 'both_hom'  (F1 must be
+      het; informative even without the F1 genotype)
+    * one parent homozygous + F1 genotyped heterozygous -> 'phased'  (the
+      homozygous parent fixes its contributed allele, so the other F1 allele is
+      assigned to the opposite parent — this rescues sites where the *other*
+      parent is heterozygous, common with outbreeding)
+    * both parents heterozygous (or phase otherwise ambiguous) -> uninformative
 
-A site where the variable-species parents disagree (or one is heterozygous) is
-NOT discarded silently — it is reported as 'background_specific', usable only for
-the F1s descending from the parent for which it is cleanly diagnostic. That keeps
-the robust 'shared' set for combined analysis while preserving power per
-background.
-
-Genotype calling tolerates sequencing noise: a parent is called homozygous when the
-minor-allele fraction (from AD) is below `maf_threshold`, not strictly 0.
+Because each F1 has its own parents and its own genotype, the variable/fixed
+allele identity is tracked **per F1 plant**, not per species. A site informative
+and concordant for every F1 plant is 'shared'; otherwise it is 'plant_specific'
+and only used for the plants it is valid for.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from .annotation import GeneIndex
-from .config import CrossConfig
+from .config import CrossConfig, F1Plant
 from .vcf import SampleCall, Variant, iter_variants
 
 HOM_REF, HOM_ALT, HET, MISSING = "hom_ref", "hom_alt", "het", "missing"
 
 
 @dataclass
-class DiagnosticSNP:
+class PlantAllele:
+    variable: str   # nucleotide inherited from the variable-lineage (maternal) parent
+    fixed: str      # nucleotide inherited from the fixed-lineage (paternal) parent
+    tier: str       # 'both_hom' | 'phased'
+
+
+@dataclass
+class InformativeSNP:
     chrom: str
     pos: int
     ref: str
     alt: str
     qual: float
-    fixed_allele: str                       # nucleotide fixed in fixed-species parent(s)
-    variable_allele_shared: Optional[str]   # nucleotide for 'shared' sites, else None
-    diagnostic_class: str                   # 'shared' | 'background_specific'
-    backgrounds: List[str]                  # variable-parent backgrounds this SNP serves
-    bg_variable_allele: Dict[str, str]      # background -> expected variable nucleotide
-    parent_states: Dict[str, str] = field(default_factory=dict)
-    parent_depths: Dict[str, Optional[int]] = field(default_factory=dict)
+    per_plant: Dict[str, PlantAllele]   # plant name -> resolved alleles
+    classification: str                  # 'shared' | 'plant_specific'
+    backgrounds: List[str]               # backgrounds of the informative plants
     gene_id: str = "intergenic"
     gene_name: str = "intergenic"
     location: str = "intergenic"
 
-    def variable_is_ref_for(self, background: str) -> bool:
-        allele = (self.variable_allele_shared
-                  or self.bg_variable_allele.get(background))
-        return allele == self.ref
+    def for_plant(self, plant: str) -> Optional[PlantAllele]:
+        return self.per_plant.get(plant)
+
+    def variable_is_ref(self, plant: str) -> bool:
+        pa = self.per_plant.get(plant)
+        return bool(pa and pa.variable == self.ref)
 
 
 @dataclass
 class DiagnoseStats:
     total: int = 0
     biallelic_snp: int = 0
-    parents_callable: int = 0
-    fixed_in_fixed_species: int = 0
+    informative: int = 0
     shared: int = 0
-    background_specific: int = 0
+    plant_specific: int = 0
 
+
+# ---------------------------------------------------------------------------
+# Genotype calling (AD-aware, tolerant of low-level sequencing noise)
+# ---------------------------------------------------------------------------
 
 def call_state(call: SampleCall, *, min_depth: int, maf_threshold: float) -> str:
-    """Classify one parent's genotype, tolerating low-level sequencing noise.
-
-    Prefers allelic depth (AD) when present; otherwise falls back to the GT
-    field gated on total depth. Returns HOM_REF / HOM_ALT / HET / MISSING.
-    """
+    """Return HOM_REF / HOM_ALT / HET / MISSING for one sample."""
     if call.ad is not None and len(call.ad) >= 2:
         ref_d, alt_d = call.ad[0], call.ad[1]
         total = ref_d + alt_d
@@ -80,8 +85,6 @@ def call_state(call: SampleCall, *, min_depth: int, maf_threshold: float) -> str
         if (1 - alt_frac) <= maf_threshold:
             return HOM_ALT
         return HET
-
-    # No AD: use GT, but require depth evidence if we have it.
     if call.dp is not None and call.dp < min_depth:
         return MISSING
     if call.gt is None:
@@ -92,109 +95,123 @@ def call_state(call: SampleCall, *, min_depth: int, maf_threshold: float) -> str
     return HET
 
 
-def _hom_index(state: str) -> Optional[str]:
-    return {HOM_REF: "0", HOM_ALT: "1"}.get(state)
+def _allele_set(state: str) -> Optional[Set[str]]:
+    return {HOM_REF: {"0"}, HOM_ALT: {"1"}, HET: {"0", "1"}}.get(state)
 
 
-def _nuc(idx: str, ref: str, alt: str) -> str:
-    return ref if idx == "0" else alt
+def informative_for_plant(mother: Optional[Set[str]],
+                          father: Optional[Set[str]],
+                          f1: Optional[Set[str]],
+                          ref: str, alt: str) -> Optional[PlantAllele]:
+    """Resolve the maternal (variable) and paternal (fixed) allele for one F1.
 
+    `mother`/`father`/`f1` are allele-index sets ({'0'}, {'1'}, {'0','1'}) or
+    None when the genotype is missing. Returns a PlantAllele or None.
+    """
+    def nuc(idx: str) -> str:
+        return ref if idx == "0" else alt
+
+    hom = ({"0"}, {"1"})
+    f1_het = f1 == {"0", "1"}
+
+    # Strongest tier: both parents homozygous for different alleles.
+    if mother in hom and father in hom and mother != father:
+        if f1 is not None and not f1_het:
+            return None                      # genotype conflicts with expectation
+        return PlantAllele(variable=nuc(next(iter(mother))),
+                           fixed=nuc(next(iter(father))), tier="both_hom")
+
+    # Phased tiers require a heterozygous F1 genotype.
+    if not f1_het:
+        return None
+
+    if father in hom:                        # paternal allele fixed -> maternal known
+        pat = next(iter(father))
+        mat = "1" if pat == "0" else "0"
+        if mother is not None and mat not in mother:
+            return None                      # mother cannot transmit the maternal allele
+        return PlantAllele(variable=nuc(mat), fixed=nuc(pat), tier="phased")
+
+    if mother in hom:                        # maternal allele fixed -> paternal known
+        mat = next(iter(mother))
+        pat = "1" if mat == "0" else "0"
+        if father is not None and pat not in father:
+            return None
+        return PlantAllele(variable=nuc(mat), fixed=nuc(pat), tier="phased")
+
+    return None                              # both heterozygous / ambiguous phase
+
+
+# ---------------------------------------------------------------------------
+# Site classification across all F1 plants
+# ---------------------------------------------------------------------------
 
 def classify_site(variant: Variant, cfg: CrossConfig, *,
                   min_depth: int, maf_threshold: float,
-                  stats: DiagnoseStats) -> Optional[DiagnosticSNP]:
-    """Apply the diagnostic criteria to one biallelic SNP. None if not usable."""
+                  stats: DiagnoseStats) -> Optional[InformativeSNP]:
     alt = variant.alt[0]
 
-    # --- fixed-species parent(s): must be homozygous, concordant ----------
-    fixed_idx: Optional[str] = None
-    parent_states: Dict[str, str] = {}
-    parent_depths: Dict[str, Optional[int]] = {}
-    for p in cfg.fixed_parents:
-        c = variant.call(p.vcf_sample)
-        st = call_state(c, min_depth=min_depth, maf_threshold=maf_threshold)
-        parent_states[p.name] = st
-        parent_depths[p.name] = c.dp
-        idx = _hom_index(st)
-        if idx is None:
-            return None                      # het or missing in fixed parent
-        if fixed_idx is None:
-            fixed_idx = idx
-        elif fixed_idx != idx:
-            return None                      # fixed parents disagree
-    stats.fixed_in_fixed_species += 1
+    # Genotype every parent and F1 once.
+    def state(sample: Optional[str]) -> Optional[Set[str]]:
+        if not sample:
+            return None
+        return _allele_set(call_state(variant.call(sample),
+                                      min_depth=min_depth,
+                                      maf_threshold=maf_threshold))
 
-    # --- variable-species parents: per-parent homozygous index ------------
-    var_idx: Dict[str, Optional[str]] = {}
-    any_callable = False
-    for p in cfg.variable_parents:
-        c = variant.call(p.vcf_sample)
-        st = call_state(c, min_depth=min_depth, maf_threshold=maf_threshold)
-        parent_states[p.name] = st
-        parent_depths[p.name] = c.dp
-        idx = _hom_index(st)
-        var_idx[p.name] = idx
-        if idx is not None:
-            any_callable = True
-    if not any_callable:
+    parent_states = {p.name: state(p.vcf_sample) for p in cfg.parents}
+
+    per_plant: Dict[str, PlantAllele] = {}
+    for pl in cfg.f1_plants:
+        pa = informative_for_plant(
+            parent_states.get(pl.mother),
+            parent_states.get(pl.father),
+            state(pl.vcf_sample),
+            variant.ref, alt)
+        if pa is not None:
+            per_plant[pl.name] = pa
+    if not per_plant:
         return None
 
-    # Which backgrounds are cleanly diagnostic (variable hom, != fixed)?
-    bg_variable_allele: Dict[str, str] = {}
-    for name, idx in var_idx.items():
-        if idx is not None and idx != fixed_idx:
-            bg_variable_allele[name] = _nuc(idx, variant.ref, alt)
-    if not bg_variable_allele:
-        return None
+    # 'shared' iff every F1 plant is informative and concordant on the alleles.
+    all_plants = {pl.name for pl in cfg.f1_plants}
+    vari(0)  # placeholder removed below
+    return _build(variant, alt, per_plant, all_plants, cfg, stats)
 
-    fixed_nuc = _nuc(fixed_idx, variant.ref, alt)
-    callable_names = [p.name for p in cfg.variable_parents
-                      if var_idx[p.name] is not None]
-    # 'shared' (safe for every F1 background) requires EVERY variable parent to
-    # be callable (homozygous) AND concordant on one diagnostic allele. If any
-    # variable parent is heterozygous or missing, the site cannot be trusted for
-    # that parent's F1s, so it is background-specific instead.
-    shared = (len(callable_names) == len(cfg.variable_parents)
-              and set(bg_variable_allele) == set(callable_names)
-              and len(set(bg_variable_allele.values())) == 1)
 
+def _build(variant, alt, per_plant, all_plants, cfg, stats) -> InformativeSNP:
+    variable_nucs = {pa.variable for pa in per_plant.values()}
+    fixed_nucs = {pa.fixed for pa in per_plant.values()}
+    shared = (set(per_plant) == all_plants
+              and len(variable_nucs) == 1 and len(fixed_nucs) == 1)
     if shared:
         stats.shared += 1
-        variable_shared = next(iter(bg_variable_allele.values()))
-        diag_class = "shared"
-        backgrounds = sorted(bg_variable_allele)
+        classification = "shared"
     else:
-        stats.background_specific += 1
-        variable_shared = None
-        diag_class = "background_specific"
-        backgrounds = sorted(bg_variable_allele)
+        stats.plant_specific += 1
+        classification = "plant_specific"
+    stats.informative += 1
 
-    return DiagnosticSNP(
+    bg_by_plant = {pl.name: pl.bg for pl in cfg.f1_plants}
+    backgrounds = sorted({bg_by_plant[name] for name in per_plant})
+
+    return InformativeSNP(
         chrom=variant.chrom, pos=variant.pos, ref=variant.ref, alt=alt,
-        qual=variant.qual,
-        fixed_allele=fixed_nuc,
-        variable_allele_shared=variable_shared,
-        diagnostic_class=diag_class,
-        backgrounds=backgrounds,
-        bg_variable_allele=bg_variable_allele,
-        parent_states=parent_states,
-        parent_depths=parent_depths,
-    )
+        qual=variant.qual, per_plant=per_plant,
+        classification=classification, backgrounds=backgrounds)
 
 
-def find_diagnostic_snps(cfg: CrossConfig, vcf_path: str, *,
-                         min_depth: int = 8,
-                         maf_threshold: float = 0.10,
-                         min_qual: float = 30.0,
-                         snps_only: bool = True,
-                         chrom_filter: Optional[str] = None,
-                         gene_index: Optional[GeneIndex] = None,
-                         ) -> Tuple[List[DiagnosticSNP], DiagnoseStats]:
-    """Scan a multi-sample VCF and return diagnostic SNPs + run statistics."""
-    out: List[DiagnosticSNP] = []
+def find_informative_snps(cfg: CrossConfig, vcf_path: str, *,
+                          min_depth: int = 8,
+                          maf_threshold: float = 0.10,
+                          min_qual: float = 30.0,
+                          snps_only: bool = True,
+                          chrom_filter: Optional[str] = None,
+                          gene_index: Optional[GeneIndex] = None,
+                          ) -> Tuple[List[InformativeSNP], DiagnoseStats]:
+    out: List[InformativeSNP] = []
     stats = DiagnoseStats()
     window = cfg.annotation_window
-
     for v in iter_variants(vcf_path, snps_only=snps_only,
                            chrom_filter=chrom_filter, min_qual=min_qual):
         stats.total += 1
@@ -210,5 +227,4 @@ def find_diagnostic_snps(cfg: CrossConfig, vcf_path: str, *,
             snp.gene_id, snp.gene_name, snp.location = (
                 hit.gene_id, hit.gene_name, hit.location)
         out.append(snp)
-    stats.parents_callable = len(out)
     return out, stats

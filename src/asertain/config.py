@@ -1,16 +1,28 @@
-"""Cross-design configuration: who is a parent, who is an F1, how F1s group.
+"""Cross-design configuration: pedigree + nested replication.
 
-The whole point of ASErtain's design is that your *cross structure* drives SNP
-selection and statistics. A single config file (YAML or JSON) names the exact
-parent individuals and the F1 replicates, and groups F1s by which parent of the
-variable species they descend from. Everything downstream reads this object, so
-the CLI stays terse.
+The data model reflects two realities of real hybrid crosses:
 
-Terminology (generic — assign real-world labels in the config):
-    variable_species  the parental lineage carrying the expression difference of
-                      interest, possibly with several cross parents
-    fixed_species     the other parental lineage, typically a single cross parent
-    backgrounds       F1 groupings by variable-species parent (e.g. p1, p2, ...)
+* **Outbred parents.** Diagnostic sites are not "fixed between species" but
+  *informative for a specific F1*: phase (which allele is maternal vs paternal)
+  is resolved from that F1's own genotype together with its two named parents.
+  So the config names, for every F1, its exact mother and father.
+
+* **Nested replication.** RNA samples (flowers) are grouped under the F1 plant
+  they came from. The plant is the biological replicate; flowers are technical /
+  observational sub-samples nested within it. The config encodes that hierarchy
+  so the statistics never mistake flowers for independent replicates.
+
+Terminology (generic — assign real labels in the config):
+    variable lineage  the parental lineage carrying the expression difference of
+                      interest, often with several cross parents
+    fixed lineage     the other parental lineage
+    background        an F1 grouping, by default its mother (variable-lineage
+                      parent), used for the cross-background consistency check
+
+Two schemas are accepted:
+    * new  : `parents:` + `f1_plants:` (with `flowers:`)  ← full pedigree/nesting
+    * legacy: `variable_parents:`/`fixed_parents:`/`f1:`   ← auto-adapted, one
+              flower per plant, mother = background, father = first fixed parent
 """
 from __future__ import annotations
 
@@ -19,27 +31,42 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+VARIABLE, FIXED = "variable", "fixed"
+
 
 @dataclass
 class Parent:
-    name: str                 # short label, e.g. 'p1'
+    name: str                 # short label, e.g. 'k1'
     vcf_sample: str           # the column name in the VCF
-    species: str              # 'variable' or 'fixed'
+    lineage: str              # 'variable' or 'fixed'
 
 
 @dataclass
-class F1Replicate:
-    name: str                 # short label, e.g. 'f1_k1_r1'
-    vcf_sample: Optional[str] # VCF column (may be None if F1s not genotyped)
+class Flower:
+    name: str                 # RNA sample / library label
     bam: str                  # path to sorted, indexed BAM
-    background: str           # which variable-species parent (e.g. 'p1')
+    vcf_sample: Optional[str] = None   # optional, rarely needed at flower level
+
+
+@dataclass
+class F1Plant:
+    name: str                 # biological replicate label
+    mother: str               # variable-lineage Parent.name
+    father: str               # fixed-lineage Parent.name
+    flowers: List[Flower]
+    vcf_sample: Optional[str] = None   # F1 plant's own VCF column (for phasing)
+    background: Optional[str] = None    # defaults to `mother`
+
+    @property
+    def bg(self) -> str:
+        return self.background or self.mother
 
 
 @dataclass
 class Reference:
     fasta: Optional[str] = None
-    # which biological entity the reference equals, for ref-bias bookkeeping:
-    # 'variable' | 'fixed' | 'third_species' | 'unknown'
+    # which biological entity the reference equals, for bias bookkeeping:
+    # 'variable' | 'fixed' | 'third_species' | a specific parent name | 'unknown'
     identity: str = "unknown"
 
 
@@ -47,98 +74,133 @@ class Reference:
 class CrossConfig:
     project: str
     reference: Reference
-    variable_label: str               # display name for the variable species
-    fixed_label: str                  # display name for the fixed species
-    variable_parents: List[Parent]    # the exact variable-species individuals
-    fixed_parents: List[Parent]       # the exact fixed-species individual(s)
-    f1: List[F1Replicate]
+    variable_label: str
+    fixed_label: str
+    parents: List[Parent]
+    f1_plants: List[F1Plant]
     gtf: Optional[str] = None
     annotation_window: int = 500
-    # convenience: derived at load
-    backgrounds: Dict[str, List[str]] = field(default_factory=dict)
 
-    # -- lookups -----------------------------------------------------------
+    # -- parent lookups ----------------------------------------------------
+    def parent(self, name: str) -> Parent:
+        for p in self.parents:
+            if p.name == name:
+                return p
+        raise KeyError(f"parent '{name}' not defined")
+
     @property
-    def variable_vcf_samples(self) -> List[str]:
-        return [p.vcf_sample for p in self.variable_parents]
+    def variable_parents(self) -> List[Parent]:
+        return [p for p in self.parents if p.lineage == VARIABLE]
 
     @property
-    def fixed_vcf_samples(self) -> List[str]:
-        return [p.vcf_sample for p in self.fixed_parents]
+    def fixed_parents(self) -> List[Parent]:
+        return [p for p in self.parents if p.lineage == FIXED]
 
-    def f1_by_name(self, name: str) -> F1Replicate:
-        for r in self.f1:
-            if r.name == name:
-                return r
-        raise KeyError(name)
+    # -- F1 lookups --------------------------------------------------------
+    @property
+    def flowers(self) -> List[Flower]:
+        return [fl for pl in self.f1_plants for fl in pl.flowers]
+
+    def plant_of_flower(self, flower_name: str) -> F1Plant:
+        for pl in self.f1_plants:
+            if any(fl.name == flower_name for fl in pl.flowers):
+                return pl
+        raise KeyError(flower_name)
 
     def backgrounds_present(self) -> List[str]:
-        return sorted({r.background for r in self.f1})
+        return sorted({pl.bg for pl in self.f1_plants})
 
-    def reference_is(self, species: str) -> Optional[bool]:
-        """True/False if reference identity is known to (mis)match `species`
-        ('variable' or 'fixed'); None if unknown."""
-        if self.reference.identity in ("unknown", ""):
-            return None
-        if self.reference.identity == "third_species":
-            return False
-        return self.reference.identity == species
+    def plants_in_background(self, bg: str) -> List[F1Plant]:
+        return [pl for pl in self.f1_plants if pl.bg == bg]
 
+
+# ---------------------------------------------------------------------------
+# Loading
+# ---------------------------------------------------------------------------
 
 def _load_raw(path: str) -> dict:
     with open(path) as fh:
         if path.endswith((".yaml", ".yml")):
-            import yaml  # optional dependency; ubiquitous in bioinfo envs
+            import yaml
             return yaml.safe_load(fh)
         return json.load(fh)
 
 
 def load_config(path: str) -> CrossConfig:
-    """Parse a YAML/JSON cross-design file into a CrossConfig."""
     if not os.path.exists(path):
         raise FileNotFoundError(path)
     raw = _load_raw(path)
-
     ref = Reference(**(raw.get("reference") or {}))
-
-    def _parents(key: str, species: str) -> List[Parent]:
-        return [Parent(name=p["name"], vcf_sample=p["vcf_sample"],
-                       species=species)
-                for p in raw.get(key, [])]
-
-    f1 = [F1Replicate(name=r["name"], vcf_sample=r.get("vcf_sample"),
-                      bam=r["bam"], background=r["background"])
-          for r in raw.get("f1", [])]
-
-    cfg = CrossConfig(
+    common = dict(
         project=raw.get("project", "asertain"),
         reference=ref,
         variable_label=raw.get("variable_label", "variable"),
         fixed_label=raw.get("fixed_label", "fixed"),
-        variable_parents=_parents("variable_parents", "variable"),
-        fixed_parents=_parents("fixed_parents", "fixed"),
-        f1=f1,
         gtf=raw.get("gtf"),
         annotation_window=int(raw.get("annotation_window", 500)),
     )
-    cfg.backgrounds = {bg: [r.name for r in cfg.f1 if r.background == bg]
-                       for bg in cfg.backgrounds_present()}
+
+    if "f1_plants" in raw:
+        cfg = _load_new(raw, common)
+    elif "f1" in raw:
+        cfg = _load_legacy(raw, common)
+    else:
+        raise ValueError("Config must contain either 'f1_plants' (new schema) "
+                         "or 'f1' (legacy schema).")
     _validate(cfg)
     return cfg
 
 
+def _load_new(raw: dict, common: dict) -> CrossConfig:
+    parents = [Parent(name=p["name"], vcf_sample=p["vcf_sample"],
+                      lineage=p.get("lineage", VARIABLE))
+               for p in raw.get("parents", [])]
+    plants: List[F1Plant] = []
+    for pl in raw["f1_plants"]:
+        flowers = [Flower(name=fl["name"], bam=fl["bam"],
+                          vcf_sample=fl.get("vcf_sample"))
+                   for fl in pl.get("flowers", [])]
+        plants.append(F1Plant(
+            name=pl["name"], mother=pl["mother"], father=pl["father"],
+            flowers=flowers, vcf_sample=pl.get("vcf_sample"),
+            background=pl.get("background")))
+    return CrossConfig(parents=parents, f1_plants=plants, **common)
+
+
+def _load_legacy(raw: dict, common: dict) -> CrossConfig:
+    """Adapt the original schema: each F1 becomes a one-flower plant."""
+    parents: List[Parent] = []
+    for p in raw.get("variable_parents", []):
+        parents.append(Parent(p["name"], p["vcf_sample"], VARIABLE))
+    for p in raw.get("fixed_parents", []):
+        parents.append(Parent(p["name"], p["vcf_sample"], FIXED))
+    father = next((p.name for p in parents if p.lineage == FIXED), None)
+    plants: List[F1Plant] = []
+    for r in raw["f1"]:
+        bg = r["background"]
+        plants.append(F1Plant(
+            name=r["name"], mother=bg, father=father,
+            flowers=[Flower(name=r["name"], bam=r["bam"],
+                            vcf_sample=r.get("vcf_sample"))],
+            vcf_sample=r.get("vcf_sample"), background=bg))
+    return CrossConfig(parents=parents, f1_plants=plants, **common)
+
+
 def _validate(cfg: CrossConfig) -> None:
     errs: List[str] = []
-    if len(cfg.variable_parents) < 1:
-        errs.append("at least one variable-species parent is required")
-    if len(cfg.fixed_parents) < 1:
-        errs.append("at least one fixed-species parent is required")
-    if not cfg.f1:
-        errs.append("no F1 replicates defined")
-    for r in cfg.f1:
-        if r.background not in {p.name for p in cfg.variable_parents}:
-            errs.append(
-                f"F1 '{r.name}' background '{r.background}' does not match any "
-                f"variable parent name {[p.name for p in cfg.variable_parents]}")
+    if not cfg.variable_parents:
+        errs.append("no variable-lineage parents defined")
+    if not cfg.fixed_parents:
+        errs.append("no fixed-lineage parents defined")
+    if not cfg.f1_plants:
+        errs.append("no F1 plants defined")
+    names = {p.name for p in cfg.parents}
+    for pl in cfg.f1_plants:
+        if pl.mother not in names:
+            errs.append(f"F1 plant '{pl.name}': mother '{pl.mother}' is not a parent")
+        if pl.father not in names:
+            errs.append(f"F1 plant '{pl.name}': father '{pl.father}' is not a parent")
+        if not pl.flowers:
+            errs.append(f"F1 plant '{pl.name}' has no flowers")
     if errs:
         raise ValueError("Invalid config:\n  - " + "\n  - ".join(errs))
