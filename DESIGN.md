@@ -107,21 +107,33 @@ WASP SNP files) from the informative-SNP set; you re-align, then count with
 `n_plants_fixed_seen` columns let you distinguish a *real* complete imbalance
 from an allele that was never observable due to mapping loss.
 
-### 4. Statistics respect the nested replication (flower → plant)
+### 4. Statistics respect the nested replication, and stay honest at small n
 
 Replication is hierarchical: background → F1 plant → flower. Flowers from one
 plant share a genome, so they are **not** independent biological replicates.
 
-* **Collapse** — each plant's flowers are summed into one (variable, fixed) count
-  per gene. The F1 plant is the unit of inference (honest *n* = number of plants).
-* **Primary test** — a beta-binomial across plants, whose overdispersion absorbs
-  plant-to-plant biological variation.
-* **Secondary** — a per-plant logit t-test across plants.
-* **Descriptive only** — the pooled binomial across all reads, flagged
-  anti-conservative.
-* **Consistency** — a gene is called ASE only if the effect points the same way
-  across all backgrounds (e.g. both variable-lineage parents), guarding against
-  parent-specific artefacts.
+* **Collapse flowers** — each plant's flowers are summed into per-SNP (variable,
+  fixed) counts. The F1 plant is the unit of inference.
+* **Per-plant test** — each plant is tested on its own: a beta-binomial across
+  that plant's informative SNPs when it has ≥3 (the overdispersion absorbs
+  SNP/mapping noise), otherwise a pooled binomial. A multi-start optimiser and a
+  convergence gate keep the fit stable; non-converged fits fall back to binomial.
+* **Combine by intersection–union (max-p)** — the gene's p-value is the *largest*
+  per-plant p, so a call requires *every* contributing plant to be individually
+  significant in the same direction. This is valid and conservative at small n
+  (it needs no across-plant variance estimate — a beta-binomial *across* only 2
+  plants is unidentifiable), and it bakes the cross-background consistency in
+  rather than treating it as a footnote.
+* **Consistency** — `consistent_backgrounds` requires ≥2 backgrounds present and
+  one shared direction; a gene resolved in a single background cannot pass.
+* **Honesty flags** — `phase_concordant` (per-SNP directions agree within each
+  plant), `fixed_allele_seen` / `possible_ref_bias` (separating real complete ASE
+  from a fixed allele lost to mapping bias under a single-parent reference).
+* **Descriptive only** — the pooled binomial and the per-plant logit t-test are
+  reported but never drive calls.
+
+This replaces an earlier across-plants beta-binomial that was uncalibrated at
+n=2 plants (see AUDIT.md, finding C2).
 
 ## File-format contracts
 
