@@ -1,7 +1,7 @@
 """Reference-bias mitigation helpers.
 
-When the reference equals one parent (e.g. one kunthii variant), reads carrying
-that parent's allele map preferentially and the other allele can be lost
+When the reference equals one of the parents (a single parental haplotype), reads
+carrying that parent's allele map preferentially and the other allele can be lost
 entirely — a serious confound for ASE. Two pre-alignment remedies are supported
 here; both require you to RE-ALIGN the F1 reads afterwards:
 

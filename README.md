@@ -55,32 +55,41 @@ asertain check    --config my_cross.yaml          # validate config + tools
 
 | Subcommand | Input | Output |
 |-----------|-------|--------|
-| `diagnose` | multi-sample VCF + config | `*.diagnostic_snps.tsv`, `*.bed` |
-| `count`    | diagnostic SNPs + F1 BAMs | `*.allele_counts.tsv` |
+| `diagnose` | multi-sample VCF + config | `*.informative_snps.tsv`, `*.bed` |
+| `count`    | informative SNPs + F1 flower BAMs | `*.allele_counts.tsv` |
 | `test`     | allele counts | `*.gene_ase.tsv` |
 | `contrast` | gene ASE + parental DE | `*.cis_trans.tsv` |
 | `report`   | gene ASE | `*.report.html` (+ plot) |
 | `run`      | config + VCF (+ DE) | all of the above |
+| `mask-reference` | informative SNPs + reference | N-masked FASTA (+ WASP SNP files) |
+
+Designed for **outbred parents**, **nested replication** (RNA samples within
+individuals), and **RNA-seq-only** data.
 
 ## What makes the calls trustworthy
 
-* **Exact-parent diagnostic SNPs** — sites must be homozygous and concordant
-  across the parents of each species, not merely frequent in a pool. Sites where
-  one parental background disagrees are kept as *background-specific* and used
-  only where they are valid.
+* **Phased informative SNPs** — for each F1 individual, the maternal (variable)
+  and paternal (fixed) allele are resolved from that F1's genotype plus its two
+  named parents, so the method works even when parents are heterozygous/outbred.
+  Phase is taken from the parents (genetic fact), not from F1 expression, so
+  strong-ASE sites are retained rather than miscalled away.
 * **Flag-driven reference-bias handling** — `none` / `report` / `null-shift` /
-  `wasp` / `nmask`, so you can match whatever reference your reads were aligned to.
-* **Replicate-aware statistics** — the F1 individual is the unit of inference
-  (per-replicate logit t-test + beta-binomial), with a cross-background
-  consistency requirement; the anti-conservative pooled binomial is reported only
-  as a descriptor.
+  `wasp` / `nmask`, plus `mask-reference` to build the N-masked reference / WASP
+  inputs. Important when the reference is one parent (the other allele can be lost).
+* **Nested, replicate-aware statistics** — flowers collapse into their plant; the
+  plant (individual) is the unit of inference (beta-binomial across plants +
+  per-plant logit t-test), with a cross-background consistency requirement. The
+  anti-conservative pooled binomial is reported only as a descriptor, and a
+  `fixed_allele_seen` column separates real complete-ASE from mapping dropout.
 
 ## Status
 
-Fully implemented: `diagnose`, `count`, `test`, plus the CLI, config, and
+Fully implemented and tested (synthetic + live BAMs): `diagnose`, `count`,
+`test`, `mask-reference`, plus the CLI, config (new + legacy schema), and
 file-format layer. Working scaffolds to extend: `contrast` (category logic done;
 a formal *trans* significance test is marked for extension), `report`, and the
-WASP wrapper in `external.py`.
+WASP remap chain in `external.py` (SNP-file generation done; the aligner step
+needs your alignment command).
 
 ## Layout
 

@@ -27,6 +27,7 @@ def check_tool(tool_path: str, version_flag: str = "--version") -> bool:
         res = subprocess.run(
             [tool_path, version_flag],
             capture_output=True, text=True, check=False,
+            errors="replace",
         )
         if res.returncode == 0:
             first = (res.stdout or res.stderr).strip().split("\n")[0]
@@ -57,6 +58,7 @@ def run(cmd: Sequence[str], *, capture: bool = True,
     try:
         return subprocess.run(
             list(cmd), capture_output=capture, text=text, check=check,
+            errors="replace" if text else None,
         )
     except subprocess.CalledProcessError as exc:
         raise ExternalToolError(

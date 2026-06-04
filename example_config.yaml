@@ -1,44 +1,72 @@
 # ASErtain cross-design configuration (template)
 #
-# Describe a two-parent / F1 design. ASErtain works in terms of generic roles:
+# Models a two-lineage / F1 design with OUTBRED parents and NESTED replication.
+# ASErtain works in terms of generic roles, so any organism fits:
 #
-#   variable species : the parental lineage carrying the expression difference
-#                      of interest, possibly with several cross parents
-#   fixed species    : the other parental lineage, typically a single cross parent
-#   background       : an F1 grouping by which variable-species parent it
-#                      descends from (must match a variable_parents `name`)
+#   variable lineage : the parental lineage carrying the expression difference of
+#                      interest, often with several cross parents
+#   fixed lineage    : the other parental lineage
+#   background       : an F1 grouping, by default its mother (variable-lineage
+#                      parent), used for the cross-background consistency check
 #
-# Assign your own display labels below; nothing in the code is organism-specific.
+# Key ideas this schema encodes:
+#   * Each F1 PLANT names its exact mother and father, so informative SNPs are
+#     phased per individual (works even when parents are heterozygous/outbred).
+#   * FLOWERS (RNA samples) are nested under their plant. The plant is the
+#     biological replicate; flowers are technical/observational sub-samples.
+#   * F1 plants are genotyped (vcf_sample) so the "one parent heterozygous" case
+#     can be phased.
 
 project: my_ase_study
 
-variable_label: speciesA          # display name for the variable species
-fixed_label: speciesB             # display name for the fixed species
+variable_label: speciesA          # display name for the variable lineage
+fixed_label: speciesB             # display name for the fixed lineage
 
 reference:
   fasta: /path/to/reference.fa
-  # which biological entity the reference equals — drives bias bookkeeping.
-  # one of: variable | fixed | third_species | unknown
-  identity: unknown
+  # which entity the reference equals — drives bias bookkeeping.
+  # one of: variable | fixed | third_species | a parent name | unknown
+  # NB: if the reference IS one parent, prefer --bias-mode nmask or wasp
+  # (see `asertain mask-reference`) because the other allele can be lost.
+  identity: variable
 
-# Exact parent individuals used in the crosses (genotyped individually).
-# Two variable-species parents here, each giving rise to its own F1 background.
-variable_parents:
-  - { name: p1, vcf_sample: SPA_parent1 }
-  - { name: p2, vcf_sample: SPA_parent2 }
+# All parent individuals (may be heterozygous — outbred is fine).
+parents:
+  - { name: p1, vcf_sample: SPA_parent1, lineage: variable }
+  - { name: p2, vcf_sample: SPA_parent2, lineage: variable }
+  - { name: q1, vcf_sample: SPB_parent1, lineage: fixed }
 
-fixed_parents:
-  - { name: q1, vcf_sample: SPB_parent1 }
-
-# F1 replicates: name, the VCF column (optional), the BAM, and the
-# variable-species background. Three reps per variable-species parent here.
-f1:
-  - { name: f1_p1_r1, vcf_sample: F1_p1q_1, bam: /path/bams/F1_p1q_1.bam, background: p1 }
-  - { name: f1_p1_r2, vcf_sample: F1_p1q_2, bam: /path/bams/F1_p1q_2.bam, background: p1 }
-  - { name: f1_p1_r3, vcf_sample: F1_p1q_3, bam: /path/bams/F1_p1q_3.bam, background: p1 }
-  - { name: f1_p2_r1, vcf_sample: F1_p2q_1, bam: /path/bams/F1_p2q_1.bam, background: p2 }
-  - { name: f1_p2_r2, vcf_sample: F1_p2q_2, bam: /path/bams/F1_p2q_2.bam, background: p2 }
-  - { name: f1_p2_r3, vcf_sample: F1_p2q_3, bam: /path/bams/F1_p2q_3.bam, background: p2 }
+# F1 plants = biological replicates. Each names its mother (variable lineage),
+# father (fixed lineage), its own VCF column, and its flowers (RNA samples).
+f1_plants:
+  - name: plant_p1_A
+    mother: p1
+    father: q1
+    vcf_sample: F1_p1A
+    flowers:
+      - { name: p1A_flower1, bam: /path/bams/p1A_flower1.bam }
+      - { name: p1A_flower2, bam: /path/bams/p1A_flower2.bam }
+  - name: plant_p1_B
+    mother: p1
+    father: q1
+    vcf_sample: F1_p1B
+    flowers:
+      - { name: p1B_flower1, bam: /path/bams/p1B_flower1.bam }
+      - { name: p1B_flower2, bam: /path/bams/p1B_flower2.bam }
+  - name: plant_p2_A
+    mother: p2
+    father: q1
+    vcf_sample: F1_p2A
+    flowers:
+      - { name: p2A_flower1, bam: /path/bams/p2A_flower1.bam }
+      - { name: p2A_flower2, bam: /path/bams/p2A_flower2.bam }
+  - name: plant_p2_B
+    mother: p2
+    father: q1
+    vcf_sample: F1_p2B
+    flowers:
+      - { name: p2B_flower1, bam: /path/bams/p2B_flower1.bam }
+      - { name: p2B_flower2, bam: /path/bams/p2B_flower2.bam }
 
 # Optional gene annotation for assigning SNPs to genes (GTF or GFF3, may be .gz).
 gtf: /path/to/annotation.gff3
