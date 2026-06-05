@@ -58,7 +58,13 @@ bcftools mpileup -f "$REF" -R "$WORK/anthocyanin_genes.bed" -b "$WORK/bamlist.tx
   | bcftools call -mv -Ou \
   | bcftools norm -f "$REF" -Ou \
   | bcftools view -v snps -m2 -M2 -Oz -o "$WORK/anthocyanin.vcf.gz"
-bcftools index -t "$WORK/anthocyanin.vcf.gz"
+# bcftools names samples by the bamlist path (e.g. work/k2.bam). Rename to the
+# clean names the ASErtain config expects, IN THE SAME ORDER as bamlist.txt.
+printf '%s\n' k2 k3 amphorellae F1_k2a1 F1_k3a1 > "$WORK/vcf_sample_names.txt"
+bcftools reheader -s "$WORK/vcf_sample_names.txt" \
+    -o "$WORK/anthocyanin.renamed.vcf.gz" "$WORK/anthocyanin.vcf.gz"
+mv "$WORK/anthocyanin.renamed.vcf.gz" "$WORK/anthocyanin.vcf.gz"
+bcftools index -f -t "$WORK/anthocyanin.vcf.gz"
 echo "  VCF samples : $(bcftools query -l "$WORK/anthocyanin.vcf.gz" | tr '\n' ' ')"
 echo "  biallelic SNPs: $(bcftools view -H "$WORK/anthocyanin.vcf.gz" | wc -l)"
 

@@ -229,6 +229,26 @@ def find_informative_snps(cfg: CrossConfig, vcf_path: str, *,
     out: List[InformativeSNP] = []
     stats = DiagnoseStats()
     window = cfg.annotation_window
+
+    # Fail loudly on a sample-name mismatch (otherwise every genotype reads as
+    # missing and the run silently returns nothing).
+    from .vcf import sample_names
+    vcf_samples = set(sample_names(vcf_path))
+    configured = {p.vcf_sample for p in cfg.parents}
+    configured |= {pl.vcf_sample for pl in cfg.f1_plants if pl.vcf_sample}
+    present = configured & vcf_samples
+    if not present:
+        raise ValueError(
+            "No configured sample names were found in the VCF — every genotype "
+            "would be missing.\n  Config vcf_sample names: "
+            f"{sorted(configured)}\n  VCF sample names      : {sorted(vcf_samples)}\n"
+            "  Fix the variant-calling step's sample names (e.g. bcftools "
+            "reheader) or the config's vcf_sample fields.")
+    absent = configured - vcf_samples
+    if absent:
+        print(f"  WARNING: configured samples absent from VCF (treated as "
+              f"missing): {sorted(absent)}")
+
     for v in iter_variants(vcf_path, snps_only=snps_only,
                            chrom_filter=chrom_filter, min_qual=min_qual):
         stats.total += 1
