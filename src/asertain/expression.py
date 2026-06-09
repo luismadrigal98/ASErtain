@@ -40,7 +40,10 @@ from .config import CrossConfig
 DE_COLS = [
     "gene_id", "gene_name", "baseMean",
     "mean_variable", "mean_fixed", "log2FoldChange",
-    "pvalue", "padj", "n_variable", "n_fixed", "higher_in", "method",
+    "pvalue", "padj",
+    "n_variable", "n_fixed",                 # biological units (genotypes)
+    "n_variable_flowers", "n_fixed_flowers",  # technical sub-samples
+    "higher_in", "method",
 ]
 # `higher_in` holds a role token (variable/fixed), so it is relabelled like a
 # direction column when written with user labels.
@@ -58,8 +61,8 @@ def count_parental_expression(cfg: CrossConfig, gene_index: GeneIndex, *,
                               progress: bool = True
                               ) -> Tuple[Dict[str, Dict[str, int]],
                                          Dict[str, str], Dict[str, str],
-                                         Dict[str, int]]:
-    """Count reads per gene per parental library.
+                                         Dict[str, int], Dict[str, str]]:
+    """Count reads per gene per parental library (flower).
 
     `gene_ids`, if given, restricts counting to those genes (e.g. the ASE
     candidate genes) — important because per-gene `samtools` counting is one
@@ -67,24 +70,25 @@ def count_parental_expression(cfg: CrossConfig, gene_index: GeneIndex, *,
     genome-wide DE, use a dedicated counter (featureCounts/HTSeq) + DESeq2 and
     pass that table to `contrast` instead.
 
-    Returns (counts, sample_lineage, gene_names, library_sizes):
+    Returns (counts, sample_lineage, gene_names, library_sizes, sample_genotype):
       counts[gene_id][sample] = read count
       sample_lineage[sample]  = 'variable' | 'fixed'
       gene_names[gene_id]     = display name
       library_sizes[sample]   = total mapped reads (for depth normalisation)
+      sample_genotype[sample] = parent name (the biological unit the flower nests in)
     """
     import os
-    samples: List[Tuple[str, str, str]] = []   # (sample, bam, lineage)
+    samples: List[Tuple[str, str, str, str]] = []   # (sample, bam, lineage, genotype)
     for p in cfg.parents:
         for fl in p.flowers:
-            samples.append((fl.name, fl.bam, p.lineage))
+            samples.append((fl.name, fl.bam, p.lineage, p.name))
     if not samples:
         raise ValueError(
             "No parental RNA libraries found. Add `flowers:` (with bam paths) "
             "under the parents in the config to enable the parental-DE stage, "
             "or supply an external DE table to `contrast`.")
 
-    for s, bam, _ in samples:
+    for s, bam, _, _ in samples:
         if not os.path.exists(bam):
             raise FileNotFoundError(f"parental BAM for '{s}' not found: {bam}")
         external.ensure_bam_index(bam, samtools=samtools)
@@ -96,10 +100,11 @@ def count_parental_expression(cfg: CrossConfig, gene_index: GeneIndex, *,
                          "matched nothing in the annotation).")
     gene_names = {g.gene_id: g.gene_name for _, g in genes}
     counts: Dict[str, Dict[str, int]] = {g.gene_id: {} for _, g in genes}
-    sample_lineage = {s: lin for s, _, lin in samples}
+    sample_lineage = {s: lin for s, _, lin, _ in samples}
+    sample_genotype = {s: geno for s, _, _, geno in samples}
     library_sizes: Dict[str, int] = {}
 
-    for si, (sample, bam, _lin) in enumerate(samples, 1):
+    for si, (sample, bam, _lin, _geno) in enumerate(samples, 1):
         if progress:
             print(f"  [{si}/{len(samples)}] counting {sample} over "
                   f"{len(genes)} genes", flush=True)
@@ -108,7 +113,7 @@ def count_parental_expression(cfg: CrossConfig, gene_index: GeneIndex, *,
             region = f"{chrom}:{g.start}-{g.end}"
             counts[g.gene_id][sample] = external.samtools_count(
                 bam, region, min_mapq=min_mapq, samtools=samtools)
-    return counts, sample_lineage, gene_names, library_sizes
+    return counts, sample_lineage, gene_names, library_sizes, sample_genotype
 
 
 # ---------------------------------------------------------------------------
@@ -148,29 +153,40 @@ def differential_expression(counts: Dict[str, Dict[str, int]],
                             sample_lineage: Dict[str, str],
                             gene_names: Dict[str, str], *,
                             library_sizes: Optional[Dict[str, int]] = None,
+                            sample_genotype: Optional[Dict[str, str]] = None,
                             pseudocount: float = 1.0,
                             min_per_group: int = 2) -> List[Dict]:
-    """Variable-vs-fixed DE on depth-normalised gene counts.
+    """Variable-vs-fixed DE on depth-normalised, genotype-collapsed gene counts.
 
-    Normalisation: if `library_sizes` (total mapped reads per sample, from
-    `samtools idxstats` over the WHOLE BAM) is given, counts are scaled to
-    counts-per-million-style equivalents using those — the robust default, valid
-    even for a handful of candidate genes. (This relies on the library size
-    reflecting whole-transcriptome depth, where no single gene is a large
-    fraction of the total; that holds for real RNA-seq. It is total-count, not
-    composition-robust median-of-ratios, which is appropriate for a candidate
-    direction check, not a transcriptome-wide DESeq2 replacement.) Otherwise a
-    DESeq median-of-ratios size factor is estimated from the count matrix (only
-    sensible with many genes).
+    **Depth normalisation.** If `library_sizes` (total mapped reads per flower,
+    from `samtools idxstats` over the WHOLE BAM) is given, each flower's counts
+    are scaled to counts-per-million-style equivalents — robust even for a
+    handful of candidate genes, as long as the library size reflects
+    whole-transcriptome depth (true for real RNA-seq). It is total-count, not
+    composition-robust median-of-ratios; fine for a candidate direction check,
+    not a transcriptome-wide DESeq2 replacement. With no `library_sizes`, a DESeq
+    median-of-ratios size factor is estimated from the matrix (needs many genes).
 
-    Test: a Welch t-test on log2(normalised count + pseudocount) per gene; log2
-    fold change oriented variable/fixed; Benjamini–Hochberg adjustment over the
-    genes that could be tested. Genes with too few samples in a group get a fold
-    change and direction but `pvalue = NA`.
+    **Nested replication.** Flowers are technical sub-samples of a *genotype*
+    (the biological replicate), exactly as flowers nest in an F1 plant on the ASE
+    side. So depth-normalised flowers are first **collapsed to their genotype**
+    (mean per genotype) — this makes the fold change weight each genotype equally
+    regardless of how many flowers it has (e.g. amphorellae's 6 flowers do not
+    outvote k2's 4 + k3's 3), and removes flower-level pseudoreplication from the
+    test. `sample_genotype` provides the flower→genotype map; without it each
+    flower is treated as its own genotype (legacy behaviour).
+
+    **Test.** A Welch t-test on log2(genotype-mean + pseudocount) when BOTH
+    lineages have >= `min_per_group` genotypes (proper biological replication,
+    `method=welch_genotype`). If a lineage has only one genotype (so a valid
+    across-genotype test is impossible — the common case when one parent is
+    sampled), it falls back to a flower-level Welch flagged
+    `method=welch_flower_pseudorep`, and the caller warns. log2 fold change is
+    oriented variable/fixed; BH over the tested genes.
     """
     samples = sorted(sample_lineage)
-    var_idx = [i for i, s in enumerate(samples) if sample_lineage[s] == "variable"]
-    fix_idx = [i for i, s in enumerate(samples) if sample_lineage[s] == "fixed"]
+    if sample_genotype is None:
+        sample_genotype = {s: s for s in samples}   # each flower its own genotype
 
     gene_ids = sorted(counts)
     matrix = np.array([[counts[g].get(s, 0) for s in samples] for g in gene_ids],
@@ -180,31 +196,54 @@ def differential_expression(counts: Dict[str, Dict[str, int]],
         sf = libs / libs.mean()                # size factor = lib / mean lib
     else:
         sf = size_factors(matrix)
-    norm = matrix / sf[None, :]                # genes × samples, normalised
+    norm = matrix / sf[None, :]                # genes × flowers, depth-normalised
+
+    # Genotype -> its flower column indices, and genotype -> lineage.
+    geno_cols: Dict[str, List[int]] = {}
+    geno_lineage: Dict[str, str] = {}
+    for i, s in enumerate(samples):
+        g = sample_genotype.get(s, s)
+        geno_cols.setdefault(g, []).append(i)
+        geno_lineage[g] = sample_lineage[s]
+    var_genos = sorted(g for g, lin in geno_lineage.items() if lin == "variable")
+    fix_genos = sorted(g for g, lin in geno_lineage.items() if lin == "fixed")
+    var_flowers = sum(len(geno_cols[g]) for g in var_genos)
+    fix_flowers = sum(len(geno_cols[g]) for g in fix_genos)
+    genotype_testable = len(var_genos) >= min_per_group and len(fix_genos) >= min_per_group
 
     rows: List[Dict] = []
     p_for_bh: List[Tuple[int, float]] = []     # (row index, p)
     for gi, gid in enumerate(gene_ids):
-        v = norm[gi, var_idx]
-        f = norm[gi, fix_idx]
-        mean_v = float(v.mean()) if len(v) else float("nan")
-        mean_f = float(f.mean()) if len(f) else float("nan")
-        base = float(norm[gi].mean())
+        # Collapse flowers -> genotype means (the biological unit).
+        geno_mean = {g: float(norm[gi, geno_cols[g]].mean()) for g in geno_cols}
+        gv = np.array([geno_mean[g] for g in var_genos])
+        gf = np.array([geno_mean[g] for g in fix_genos])
+        mean_v = float(gv.mean()) if len(gv) else float("nan")
+        mean_f = float(gf.mean()) if len(gf) else float("nan")
+        base = float(np.array(list(geno_mean.values())).mean())
         log2fc = math.log2((mean_v + pseudocount) / (mean_f + pseudocount))
         higher = "variable" if log2fc > 0 else ("fixed" if log2fc < 0 else "balanced")
 
         pval: Optional[float] = None
-        if len(var_idx) >= min_per_group and len(fix_idx) >= min_per_group:
-            lv = np.log2(v + pseudocount)
-            lf = np.log2(f + pseudocount)
-            # Welch t-test; guard the zero-variance / all-equal case.
-            if lv.std() == 0 and lf.std() == 0 and lv.mean() == lf.mean():
+        method = "none"
+        if genotype_testable:
+            method = "welch_genotype"
+            a, b = np.log2(gv + pseudocount), np.log2(gf + pseudocount)
+        else:
+            # Fall back to flower level (pseudoreplicated) so triage still has a p.
+            method = "welch_flower_pseudorep"
+            a = np.log2(norm[gi, [i for g in var_genos for i in geno_cols[g]]] + pseudocount)
+            b = np.log2(norm[gi, [i for g in fix_genos for i in geno_cols[g]]] + pseudocount)
+        if len(a) >= min_per_group and len(b) >= min_per_group:
+            if a.std() == 0 and b.std() == 0 and a.mean() == b.mean():
                 pval = 1.0
             else:
-                t, p = stats.ttest_ind(lv, lf, equal_var=False)
+                t, p = stats.ttest_ind(a, b, equal_var=False)
                 pval = float(p) if np.isfinite(p) else 1.0
+        else:
+            method = "no_test"
 
-        row = {
+        rows.append({
             "gene_id": gid, "gene_name": gene_names.get(gid, gid),
             "baseMean": round(base, 3),
             "mean_variable": round(mean_v, 3) if not math.isnan(mean_v) else "NA",
@@ -212,10 +251,10 @@ def differential_expression(counts: Dict[str, Dict[str, int]],
             "log2FoldChange": round(log2fc, 4),
             "pvalue": pval if pval is not None else "NA",
             "padj": "NA",
-            "n_variable": len(var_idx), "n_fixed": len(fix_idx),
-            "higher_in": higher, "method": "welch_log2norm",
-        }
-        rows.append(row)
+            "n_variable": len(var_genos), "n_fixed": len(fix_genos),
+            "n_variable_flowers": var_flowers, "n_fixed_flowers": fix_flowers,
+            "higher_in": higher, "method": method,
+        })
         if pval is not None:
             p_for_bh.append((len(rows) - 1, pval))
 
