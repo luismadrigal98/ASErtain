@@ -38,13 +38,21 @@ FLOWER_NORM_MODES = ("equalize", "none")
 
 GENE_COLS = [
     "gene_id", "gene_name", "n_snps", "n_plants", "n_backgrounds", "n_flowers",
-    "variable_reads", "fixed_reads", "mean_variable_ratio", "log2_ratio",
-    "null_p", "p_primary", "q_value", "method",
+    "variable_reads", "fixed_reads", "other_reads", "mean_variable_ratio",
+    "log2_ratio", "null_p", "p_primary", "q_value", "method",
     "per_plant_log2", "per_plant_p", "direction",
     "consistent_backgrounds", "phase_concordant",
+    "ambiguous_fraction", "low_ambiguity",
     "fixed_allele_seen", "n_plants_fixed_seen", "possible_ref_bias",
     "n_both_hom_snps", "ase_call",
 ]
+
+# Default ceiling on the fraction of allele-overlapping reads that match neither
+# clean haplotype/allele. For --counter haplotype these are *ambiguous* fragments
+# (carrying BOTH a variable and a fixed allele) — a direct phasing-quality signal;
+# for --counter pileup they are third-allele / error reads. A gene above the
+# ceiling is flagged (low_ambiguity=False) and not called.
+MAX_OTHER_FRACTION = 0.10
 
 
 def _gene_null(records: List[Dict]) -> float:
@@ -157,7 +165,8 @@ def test_genes(count_records: List[Dict], *,
                min_effect_log2: float = 0.0,
                min_plants: int = 2,
                ref_is_variable: bool = False,
-               flower_norm: str = "equalize") -> List[Dict]:
+               flower_norm: str = "equalize",
+               max_other_fraction: float = MAX_OTHER_FRACTION) -> List[Dict]:
     by_gene: Dict[str, List[Dict]] = defaultdict(list)
     for r in count_records:
         if r.get("gene_id") in (None, "", "intergenic"):
@@ -196,6 +205,12 @@ def test_genes(count_records: List[Dict], *,
         # Raw read totals (provenance — actual reads observed).
         v_tot = sum(r["variable_count"] for r in recs)
         f_tot = sum(r["fixed_count"] for r in recs)
+        o_tot = sum(r.get("other_count", 0) for r in recs)
+        # Ambiguous/other fraction — phasing-quality QC (esp. for --counter
+        # haplotype, where 'other' = fragments carrying BOTH haplotypes).
+        total_obs = v_tot + f_tot + o_tot
+        other_fraction = (o_tot / total_obs) if total_obs else 0.0
+        low_ambiguity = other_fraction <= max_other_fraction
         # Displayed effect uses the flower-NORMALISED, plant-summed counts so the
         # ratio matches what the per-plant tests actually saw.
         norm_k = sum(k for pairs in plant_pairs.values() for k, _ in pairs)
@@ -230,6 +245,7 @@ def test_genes(count_records: List[Dict], *,
             "n_flowers": len({r["flower"] for r in recs}),
             "variable_reads": v_tot,
             "fixed_reads": f_tot,
+            "other_reads": o_tot,
             "mean_variable_ratio": round(mean_ratio, 4),
             "log2_ratio": round(log2_ratio, 4) if not math.isnan(log2_ratio) else "NA",
             "null_p": round(null_p, 4),
@@ -243,6 +259,8 @@ def test_genes(count_records: List[Dict], *,
             "direction": st.direction(mean_ratio, null_p),
             "consistent_backgrounds": consistent,
             "phase_concordant": phase_conc,
+            "ambiguous_fraction": round(other_fraction, 4),
+            "low_ambiguity": low_ambiguity,
             "fixed_allele_seen": fixed_seen,
             "n_plants_fixed_seen": n_plants_fixed,
             "possible_ref_bias": possible_ref_bias,
@@ -260,7 +278,8 @@ def test_genes(count_records: List[Dict], *,
         r["ase_call"] = bool(q < alpha and effect_ok
                              and r["consistent_backgrounds"]
                              and r["n_plants"] >= r["_min_plants"]
-                             and r["phase_concordant"])
+                             and r["phase_concordant"]
+                             and r["low_ambiguity"])
         r.pop("_min_plants", None)
     results.sort(key=lambda r: r["p_primary"])
     return results

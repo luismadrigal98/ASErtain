@@ -39,6 +39,7 @@ def run_pipeline(config: str, vcf: str, out_prefix: str, *,
                  min_plants: int = 2,
                  flower_norm: str = "equalize",
                  counter: str = "pileup",
+                 max_other_fraction: float = 0.10,
                  samtools: str = "samtools",
                  verbose: bool = False) -> dict:
     cfg = load_config(config)
@@ -79,6 +80,7 @@ def run_pipeline(config: str, vcf: str, out_prefix: str, *,
     genes = testing.test_genes(
         counts, alpha=alpha, min_effect_log2=min_effect_log2,
         min_plants=min_plants, flower_norm=flower_norm,
+        max_other_fraction=max_other_fraction,
         ref_is_variable=(cfg.reference.identity == "variable"))
     write_table(genes, GENE_COLS, f"{out_prefix}.gene_ase.tsv",
                 comment="ASErtain gene-level ASE", labels=labels)

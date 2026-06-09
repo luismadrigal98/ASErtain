@@ -382,6 +382,32 @@ def test_haplotype_counts_each_read_once_endtoend():
     assert g["ase_call"] is True and g["direction"] == "variable"
 
 
+def test_ambiguous_fraction_flags_and_blocks_call():
+    # A clean, strongly-biased gene with FEW ambiguous reads -> called.
+    clean = [_rec(f"f{p}", p, "chr1:100", 90, 10, bg=b) for p, b in
+             [("P1", "b1"), ("P2", "b2")]]
+    for r in clean:
+        r["other_count"] = 2          # ~2% ambiguous
+        r["total_depth"] = r["variable_count"] + r["fixed_count"] + 2
+    g = testing.test_genes(clean, alpha=0.05)[0]
+    assert g["low_ambiguity"] is True and g["ase_call"] is True
+    assert g["ambiguous_fraction"] < 0.05 and g["other_reads"] == 4
+
+    # Same signal but 40% of reads ambiguous (mis-phasing) -> flagged, not called.
+    noisy = [_rec(f"f{p}", p, "chr1:100", 90, 10, bg=b) for p, b in
+             [("P1", "b1"), ("P2", "b2")]]
+    for r in noisy:
+        r["other_count"] = 67         # 67/(100+67) ~ 0.40
+        r["total_depth"] = r["variable_count"] + r["fixed_count"] + 67
+    g2 = testing.test_genes(noisy, alpha=0.05)[0]
+    assert g2["ambiguous_fraction"] > 0.30
+    assert g2["low_ambiguity"] is False
+    assert g2["ase_call"] is False        # blocked by the QC flag despite signal
+    # A looser ceiling lets it through again.
+    g3 = testing.test_genes(noisy, alpha=0.05, max_other_fraction=0.5)[0]
+    assert g3["low_ambiguity"] is True and g3["ase_call"] is True
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]

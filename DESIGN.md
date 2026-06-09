@@ -194,6 +194,13 @@ called **ambiguous** and excluded from K/N (kept in `other_count` for QC); paire
 mates share a QNAME so their votes are pooled and the fragment counted once,
 which also removes mate-overlap double-counting.
 
+The ambiguous fraction is itself a phasing-quality check, surfaced per gene as
+`ambiguous_fraction` and the `low_ambiguity` flag: a gene whose reads are more
+than `--max-other-fraction` (default 0.10) ambiguous is flagged and **not
+called**, because a high ambiguous rate signals a mis-phased SNP or a mapping
+artefact rather than a clean allelic signal. (For `--counter pileup` the same
+columns report the third-allele/error read fraction.)
+
 It needs no reference FASTA (the read's own base is used, not an mpileup match
 symbol) and works with the `nmask` / `wasp` de-biasing BAMs. It requires the
 SNPs to be gene-annotated (it groups by gene). `--counter pileup` (default)

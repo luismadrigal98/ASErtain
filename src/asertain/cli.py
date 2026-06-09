@@ -81,6 +81,12 @@ def _add_test_opts(p: argparse.ArgumentParser) -> None:
                         "contribution within a plant before pooling: 'equalize' "
                         "rescales each flower to equal weight so a deep flower "
                         "cannot dominate; 'none' sums raw (default: equalize)")
+    g.add_argument("--max-other-fraction", type=float, default=0.10,
+                   help="Max fraction of allele-overlapping reads matching neither "
+                        "clean haplotype/allele before a gene is flagged and not "
+                        "called (low_ambiguity); for --counter haplotype this is "
+                        "the both-haplotype 'ambiguous' fragment fraction, a "
+                        "phasing-quality QC (default: 0.10)")
     g.add_argument("--ref-is-variable", action="store_true",
                    help="Reference equals the variable lineage; flags genes whose "
                         "fixed allele is never seen as possible mapping artefacts")
@@ -183,7 +189,8 @@ def cmd_test(args) -> int:
                        min_effect_log2=args.min_effect_log2,
                        min_plants=args.min_plants,
                        ref_is_variable=args.ref_is_variable,
-                       flower_norm=args.flower_norm)
+                       flower_norm=args.flower_norm,
+                       max_other_fraction=args.max_other_fraction)
     write_table(genes, GENE_COLS, f"{args.out}.gene_ase.tsv",
                 comment="ASErtain gene-level ASE", labels=labels)
     n_ase = sum(1 for g in genes if g["ase_call"])
@@ -301,6 +308,7 @@ def cmd_run(args) -> int:
         de_alpha=args.de_alpha,
         min_effect_log2=args.min_effect_log2, min_plants=args.min_plants,
         flower_norm=args.flower_norm, counter=args.counter,
+        max_other_fraction=args.max_other_fraction,
         samtools=args.samtools, verbose=args.verbose)
     return 0
 
