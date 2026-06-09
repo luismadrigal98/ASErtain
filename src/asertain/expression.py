@@ -288,9 +288,10 @@ def run_parental_de(cfg: CrossConfig, gene_index: GeneIndex, *,
               f"Flowers of one genotype are technical replicates, so p-values "
               f"are anticonservative. Trust the fold-change DIRECTION over the "
               f"p-value, or supply a replicated external DE table to `contrast`.")
-    counts, sample_lineage, gene_names, library_sizes = count_parental_expression(
+    counts, sample_lineage, gene_names, library_sizes, sample_genotype = count_parental_expression(
         cfg, gene_index, gene_ids=gene_ids, min_mapq=min_mapq,
         samtools=samtools, progress=progress)
     return differential_expression(counts, sample_lineage, gene_names,
                                    library_sizes=library_sizes,
+                                   sample_genotype=sample_genotype,
                                    pseudocount=pseudocount)
