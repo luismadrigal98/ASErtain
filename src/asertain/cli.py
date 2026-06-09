@@ -68,6 +68,12 @@ def _add_test_opts(p: argparse.ArgumentParser) -> None:
                    help="Min |log2 allelic ratio| to call ASE (default: 0)")
     g.add_argument("--min-plants", type=int, default=2,
                    help="Min F1 plants (biological replicates) for a call (default: 2)")
+    g.add_argument("--flower-norm", default="equalize",
+                   choices=["equalize", "none"],
+                   help="Normalise differential flower (technical-replicate) "
+                        "contribution within a plant before pooling: 'equalize' "
+                        "rescales each flower to equal weight so a deep flower "
+                        "cannot dominate; 'none' sums raw (default: equalize)")
     g.add_argument("--ref-is-variable", action="store_true",
                    help="Reference equals the variable lineage; flags genes whose "
                         "fixed allele is never seen as possible mapping artefacts")
@@ -112,6 +118,7 @@ def cmd_diagnose(args) -> int:
 def cmd_count(args) -> int:
     from .config import load_config
     from .counting import count_flowers
+    from .labels import Labels
     from .tables import read_informative_snps, write_allele_counts
 
     cfg = load_config(args.config)
@@ -123,7 +130,7 @@ def cmd_count(args) -> int:
         min_mapq=args.min_mapq, min_baseq=args.min_baseq,
         min_depth=args.min_count_depth, samtools=args.samtools)
     write_allele_counts(records, f"{args.out}.allele_counts.tsv",
-                        bias_mode=args.bias_mode)
+                        bias_mode=args.bias_mode, labels=Labels.from_config(cfg))
     print(f"Wrote {len(records)} observations to {args.out}.allele_counts.tsv")
     return 0
 
@@ -151,63 +158,117 @@ def cmd_mask_reference(args) -> int:
 
 
 def cmd_test(args) -> int:
+    from .labels import parse_comment
     from .tables import read_allele_counts, write_table
     from .testing import GENE_COLS, test_genes
 
     _ensure_out_dir(args.out)
     counts = read_allele_counts(args.counts)
+    labels = parse_comment(args.counts)
     genes = test_genes(counts, alpha=args.alpha,
                        min_effect_log2=args.min_effect_log2,
                        min_plants=args.min_plants,
-                       ref_is_variable=args.ref_is_variable)
+                       ref_is_variable=args.ref_is_variable,
+                       flower_norm=args.flower_norm)
     write_table(genes, GENE_COLS, f"{args.out}.gene_ase.tsv",
-                comment="ASErtain gene-level ASE")
+                comment="ASErtain gene-level ASE", labels=labels)
     n_ase = sum(1 for g in genes if g["ase_call"])
     print(f"Genes tested: {len(genes)}  |  ASE calls (q<{args.alpha}): {n_ase}")
     print(f"Wrote {args.out}.gene_ase.tsv")
     if getattr(args, "verbose", False):
-        _write_verbose_tables(counts, args.out)
+        _write_verbose_tables(counts, args.out, flower_norm=args.flower_norm,
+                              labels=labels)
     return 0
 
 
-def _write_verbose_tables(counts, out_prefix: str) -> None:
+def _write_verbose_tables(counts, out_prefix: str, *, flower_norm: str = "equalize",
+                          labels=None) -> None:
     """Write the audit/intermediate tables enabled by --verbose."""
+    from .labels import Labels
     from .tables import write_table
-    from .testing import (SNP_DETAIL_COLS, PLANT_DETAIL_COLS,
-                          snp_plant_detail, plant_gene_detail)
+    from .testing import (SNP_DETAIL_COLS, SNP_GENE_COLS, PLANT_DETAIL_COLS,
+                          snp_plant_detail, snp_gene_summary, plant_gene_detail)
+    labels = labels or Labels()
     snp_rows = snp_plant_detail(counts)
-    plant_rows = plant_gene_detail(counts)
+    gene_snp_rows = snp_gene_summary(counts)
+    plant_rows = plant_gene_detail(counts, flower_norm=flower_norm)
     write_table(snp_rows, SNP_DETAIL_COLS, f"{out_prefix}.snp_gene_counts.tsv",
-                comment="ASErtain per gene×SNP×plant allele counts (flowers summed)")
+                comment="ASErtain per gene×SNP×plant allele counts (flowers summed)",
+                labels=labels)
+    write_table(gene_snp_rows, SNP_GENE_COLS, f"{out_prefix}.gene_snp_counts.tsv",
+                comment="ASErtain per gene×SNP allele counts (plants+flowers collapsed)",
+                labels=labels)
     write_table(plant_rows, PLANT_DETAIL_COLS, f"{out_prefix}.plant_gene_stats.tsv",
-                comment="ASErtain per gene×plant test inputs/outputs (feeds max-p)")
+                comment="ASErtain per gene×plant test inputs/outputs (feeds max-p)",
+                labels=labels)
     print(f"  [verbose] {out_prefix}.snp_gene_counts.tsv ({len(snp_rows)} rows)")
+    print(f"  [verbose] {out_prefix}.gene_snp_counts.tsv ({len(gene_snp_rows)} rows)")
     print(f"  [verbose] {out_prefix}.plant_gene_stats.tsv ({len(plant_rows)} rows)")
 
 
 def cmd_contrast(args) -> int:
     from .contrast import CONTRAST_COLS, run_contrast
+    from .labels import parse_comment
     from .tables import read_table, write_table
 
     _ensure_out_dir(args.out)
     genes = read_table(args.gene_ase)
     de = read_table(args.parental_de)
+    labels = parse_comment(args.gene_ase)
     contrasts = run_contrast(
         genes, de,
         de_gene_col=args.de_gene_col, de_log2_col=args.de_log2_col,
         de_padj_col=args.de_padj_col, ase_alpha=args.alpha,
         de_alpha=args.de_alpha, trans_log2_threshold=args.trans_log2_threshold)
     write_table(contrasts, CONTRAST_COLS, f"{args.out}.cis_trans.tsv",
-                comment="ASErtain cis/trans contrast")
+                comment="ASErtain cis/trans contrast", labels=labels)
+    n_disc = sum(1 for c in contrasts
+                 if c.get("sanity_check") == "discordant_compensatory")
+    n_conc = sum(1 for c in contrasts if c.get("sanity_check") == "concordant")
     print(f"Classified {len(contrasts)} genes -> {args.out}.cis_trans.tsv")
+    print(f"  ASE-vs-DE sanity: {n_conc} concordant, "
+          f"{n_disc} discordant (opposing cis/trans — inspect)")
+    return 0
+
+
+def cmd_parental_de(args) -> int:
+    from .annotation import GeneIndex
+    from .config import load_config
+    from .expression import DE_COLS, DE_DIRECTION_COLS, run_parental_de
+    from .labels import Labels
+    from .tables import write_table
+
+    cfg = load_config(args.config)
+    _ensure_out_dir(args.out)
+    gtf = args.gtf or cfg.gtf
+    if not gtf:
+        raise ValueError("Parental DE needs a gene annotation (--gtf or config gtf)")
+    gene_index = GeneIndex.from_file(gtf)
+    print(f"Loaded {gene_index.n_genes} genes for expression counting")
+    gene_ids = None
+    if args.genes:
+        with open(args.genes) as fh:
+            gene_ids = {ln.strip() for ln in fh if ln.strip()
+                        and not ln.startswith("#")}
+        print(f"Restricting DE to {len(gene_ids)} genes from {args.genes}")
+    de = run_parental_de(cfg, gene_index, gene_ids=gene_ids,
+                         min_mapq=args.min_mapq, samtools=args.samtools)
+    write_table(de, DE_COLS, f"{args.out}.parental_de.tsv",
+                comment="ASErtain parental differential expression (variable/fixed)",
+                labels=Labels.from_config(cfg), direction_cols=DE_DIRECTION_COLS)
+    n_sig = sum(1 for r in de if isinstance(r.get("padj"), float)
+                and r["padj"] < args.de_alpha)
+    print(f"Tested {len(de)} genes, {n_sig} DE at padj<{args.de_alpha} "
+          f"-> {args.out}.parental_de.tsv")
     return 0
 
 
 def cmd_report(args) -> int:
+    from .labels import parse_comment
     from .report import write_report
     _ensure_out_dir(args.out)
     path = write_report(args.gene_ase, f"{args.out}.report.html",
-                        title=args.title)
+                        title=args.title, labels=parse_comment(args.gene_ase))
     print(f"Wrote {path}")
     return 0
 
@@ -217,12 +278,15 @@ def cmd_run(args) -> int:
     run_pipeline(
         args.config, args.vcf, args.out,
         parental_de=args.parental_de,
+        compute_parental_de=args.compute_parental_de,
         bias_mode=args.bias_mode, control_table=args.control_table,
         min_parent_depth=args.min_parent_depth, maf_threshold=args.maf_threshold,
         min_qual=args.min_qual, chrom_filter=args.chrom_filter,
         min_mapq=args.min_mapq, min_baseq=args.min_baseq,
         min_count_depth=args.min_count_depth, alpha=args.alpha,
+        de_alpha=args.de_alpha,
         min_effect_log2=args.min_effect_log2, min_plants=args.min_plants,
+        flower_norm=args.flower_norm,
         samtools=args.samtools, verbose=args.verbose)
     return 0
 
@@ -249,6 +313,21 @@ def cmd_check(args) -> int:
         print(f"  ✗ missing BAMs for flowers: {missing}")
         return 1
     print(f"  ✓ all {len(cfg.flowers)} flower BAMs present")
+
+    # Parental-DE readiness (optional stage).
+    if cfg.has_parental_expression():
+        miss_p = [fl.name for fl in cfg.parental_flowers if not os.path.exists(fl.bam)]
+        n_var = sum(1 for p in cfg.variable_parents if p.flowers)
+        n_fix = sum(1 for p in cfg.fixed_parents if p.flowers)
+        note = "" if min(n_var, n_fix) >= 2 else "  (pseudoreplicated: one lineage has 1 genotype)"
+        if miss_p:
+            print(f"  ✗ parental-DE enabled but missing parent BAMs: {miss_p}")
+        else:
+            print(f"  ✓ parental-DE ready: {len(cfg.parental_flowers)} parent RNA "
+                  f"libraries ({n_var} variable + {n_fix} fixed genotypes){note}")
+    else:
+        print("  · parental-DE not configured (no `flowers:` under parents) — "
+              "supply an external DE table to `contrast` instead")
     return 0
 
 
@@ -328,12 +407,37 @@ def build_parser() -> argparse.ArgumentParser:
     ru.add_argument("--vcf", required=True)
     ru.add_argument("--out", required=True, help="output prefix")
     ru.add_argument("--parental-de", default=None,
-                    help="optional parental DE table to enable cis/trans contrast")
+                    help="optional external parental DE table to enable cis/trans "
+                         "contrast (takes precedence over --compute-parental-de)")
+    ru.add_argument("--compute-parental-de", action="store_true",
+                    help="compute parental DE from the parents' RNA BAMs (needs "
+                         "`flowers:` under parents in the config + a gtf) and use "
+                         "it for the cis/trans contrast and ASE sanity check")
+    ru.add_argument("--de-alpha", type=float, default=0.05,
+                    help="DE FDR threshold for the cis/trans sanity check (default: 0.05)")
     _add_diagnose_filters(ru)
     _add_bias_opts(ru)
     _add_count_opts(ru)
     _add_test_opts(ru)
     ru.set_defaults(func=cmd_run)
+
+    # parental-de
+    pde = sub.add_parser("parental-de",
+                         help="compute parental differential expression (variable "
+                              "vs fixed) from the parents' RNA BAMs")
+    pde.add_argument("--config", required=True)
+    pde.add_argument("--out", required=True, help="output prefix")
+    pde.add_argument("--gtf", default=None,
+                     help="gene annotation (defaults to config gtf)")
+    pde.add_argument("--genes", default=None,
+                     help="optional file of gene_ids (one per line) to restrict "
+                          "DE to; per-gene samtools counting is slow genome-wide")
+    pde.add_argument("--min-mapq", type=int, default=20,
+                     help="Min mapping quality for read counting (default: 20)")
+    pde.add_argument("--de-alpha", type=float, default=0.05,
+                     help="DE FDR threshold for the summary count (default: 0.05)")
+    pde.add_argument("--samtools", default="samtools")
+    pde.set_defaults(func=cmd_parental_de)
 
     # check
     ch = sub.add_parser("check", help="validate config + tool availability")

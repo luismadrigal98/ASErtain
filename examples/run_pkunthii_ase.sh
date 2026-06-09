@@ -69,21 +69,37 @@ echo "  VCF samples : $(bcftools query -l "$WORK/anthocyanin.vcf.gz" | tr '\n' '
 echo "  biallelic SNPs: $(bcftools view -H "$WORK/anthocyanin.vcf.gz" | wc -l)"
 
 echo "############ 4. ASErtain pipeline (report-mode bias) ############"
+# --flower-norm equalize : rescale each F1 flower so a deeply sequenced flower
+#                          cannot dominate its plant's allelic ratio (default).
+# --compute-parental-de  : also run variable-vs-fixed parental DE (from the
+#                          parents' RNA BAMs declared in the config) over the
+#                          candidate genes, and sanity-check each ASE call against
+#                          it (the shift should point to the more-expressed parent).
 asertain run --config "$CONFIG" \
     --vcf "$WORK/anthocyanin.vcf.gz" --out "$WORK/ase" \
     --bias-mode report \
     --min-parent-depth 10 --maf-threshold 0.10 \
     --min-count-depth 10 --min-mapq 20 --min-baseq 20 \
+    --flower-norm equalize \
+    --compute-parental-de --de-alpha 0.05 \
     --verbose                       # also write the per-SNP / per-plant audit tables
 
 echo
 echo "Done. Key outputs in $WORK/:"
 echo "  ase.informative_snps.tsv   phased informative SNPs per F1 genome"
-echo "  ase.allele_counts.tsv      per-flower x SNP allele counts (+ variable_is_ref)"
+echo "  ase.allele_counts.tsv      per-flower x SNP allele counts (+ <var>_is_ref)"
+echo "  ase.gene_snp_counts.tsv    [verbose] per gene x SNP counts (plants+flowers collapsed)"
 echo "  ase.snp_gene_counts.tsv    [verbose] per gene x SNP x plant counts (flowers summed)"
 echo "  ase.plant_gene_stats.tsv   [verbose] per gene x plant test (K,N,n_snps,rho,p) -> max-p"
-echo "  ase.gene_ase.tsv           per-gene ASE calls (check fixed_allele_seen!)"
+echo "  ase.parental_de.tsv        parental DE (variable vs fixed) over candidate genes"
+echo "  ase.gene_ase.tsv           per-gene ASE calls (check <fixed>_allele_seen!)"
+echo "  ase.cis_trans.tsv          cis/trans + ASE-vs-DE sanity check (sanity_check column)"
 echo "  ase.report.html            summary"
+echo
+echo "Column names carry your labels (variable_label/fixed_label in the config),"
+echo "e.g. kunthii_count / amphorellae_count, and direction = kunthii / amphorellae."
+echo "Sanity check: in ase.cis_trans.tsv, 'concordant' = ASE shift agrees with the"
+echo "parental DE direction; 'discordant_compensatory' = opposing cis/trans (inspect)."
 echo
 echo "Reference is kunthii, so first inspect the bias: in ase.allele_counts.tsv,"
 echo "compare variable_count vs fixed_count where variable_is_ref=True vs False."

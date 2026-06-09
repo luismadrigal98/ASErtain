@@ -41,8 +41,9 @@ The `contrast` stage classifies each gene into conserved / cis-only / trans-only
 ```
 diagnose        VCF  -> informative SNPs    (phased per F1 plant from its parents)
 count           BAMs -> per-SNP allele counts (mpileup; flag-driven ref-bias handling)
-test            counts -> gene-level ASE    (nested flower->plant statistics)
-contrast        +parental DE -> cis/trans classes
+test            counts -> gene-level ASE    (nested flower->plant statistics, flower-normalised)
+parental-de     parent RNA BAMs -> variable-vs-fixed DE (total = cis + trans)
+contrast        gene ASE + parental DE -> cis/trans classes + ASE-vs-DE sanity check
 report          -> HTML summary (+ optional volcano plot)
 run             -> all of the above from one config
 mask-reference  informative SNPs -> N-masked reference (+ WASP SNP files) for de-biasing
@@ -134,6 +135,92 @@ plant share a genome, so they are **not** independent biological replicates.
 
 This replaces an earlier across-plants beta-binomial that was uncalibrated at
 n=2 plants (see AUDIT.md, finding C2).
+
+### Flower normalisation — equalising technical-replicate contribution
+
+Flowers are technical replicates nested in a plant, and they differ in
+sequencing depth. If we just summed raw counts, a flower with 10× the reads
+would set the plant's allelic ratio almost single-handedly — the imbalance call
+would rest on one library, not on the plant. Before pooling, each flower is
+therefore rescaled by a **per-plant size factor**:
+
+```
+size_factor(flower) = depth(flower) / geomean(depths of the plant's flowers)
+normalised count    = raw count / size_factor(flower)
+```
+
+The depth is the flower's total allele-bearing reads summed across **all** of the
+plant's SNPs (a stable, library-level quantity, not a noisy per-gene one). Every
+flower of a plant is thereby brought to the same effective depth, so all flowers
+contribute comparably. Because both alleles are divided by the *same* factor,
+each flower's own allelic ratio is untouched — only its **weight** in the pooled
+(k, n) changes. The rescaled counts are rounded back to integers for the
+binomial / beta-binomial likelihoods (rounding is monotone, so k ≤ n holds).
+
+This is `--flower-norm equalize` (default). `--flower-norm none` recovers the old
+raw-summing behaviour. The displayed gene `log2_ratio` / `mean_*_ratio` are
+computed from the *normalised* plant-summed counts so they match what the test
+saw; `*_reads` stay raw (true read totals, for provenance).
+
+*Honesty.* Equalising **weight** means each flower's ratio is trusted equally
+regardless of depth — so a deep flower is down-weighted and a shallow one
+up-weighted. That is the point (a flower is an observation, not a depth quota),
+but it reweights statistical confidence rather than keeping it strictly
+depth-proportional. The plant stays the unit of inference, and the across-plant
+max-p rule plus the cross-background consistency requirement are the real guards
+against any single noisy flower. In practice flowers of one plant have similar
+depth, so the reweighting is mild and mainly caps the occasional outlier-deep
+flower that would otherwise set the call on its own (see the worked example in
+the test suite).
+
+## Parental differential expression and the ASE sanity check
+
+The F1 allelic ratio is **cis** only. The parental expression difference is
+**cis + trans** (the *total*). `asertain parental-de` estimates that total from
+the parents' own RNA-seq:
+
+* count reads per gene per parental library (`samtools view -c` over the gene
+  interval — a gene-*region* proxy for an exon-union count, deliberately
+  pure-`samtools`);
+* normalise for sequencing depth by **library size** (`samtools idxstats` total
+  mapped reads) — robust even for a handful of candidate genes, where a
+  median-of-ratios size factor would be unstable;
+* test each gene variable-vs-fixed with a Welch t-test on log2(normalised count
+  + 1), oriented variable/fixed, BH-adjusted.
+
+**Honesty.** Two limits are surfaced, not hidden. (a) Gene-region counts include
+intronic overlap — fine for a direction/magnitude check, not a substitute for a
+featureCounts/DESeq2 table (which you can pass to `contrast` directly). (b) If a
+lineage has a single genotype sampled as several flowers (as the fixed lineage
+often is), those flowers are technical replicates and the p-value is
+anticonservative — ASErtain warns, and you should trust the fold-change
+*direction* over the p-value.
+
+**The sanity check.** `contrast` joins ASE (cis) with parental DE (total) and,
+for every ASE candidate, asks whether the allelic shift points toward the parent
+the DE says is more highly expressed:
+
+| `sanity_check` | meaning |
+|----------------|---------|
+| `concordant`   | ASE cis direction agrees with the parental DE direction (expected for a cis-driven difference) |
+| `discordant_compensatory` | significant ASE opposing the DE — opposing cis/trans (compensatory); biologically real but flagged for inspection, not silently trusted |
+| `de_not_sig` / `no_parental_data` | DE absent or non-significant — cannot check |
+| `not_ase`      | gene is not an ASE candidate |
+
+This bakes the user's request — *an ASE candidate's shift should be toward the
+significantly more-expressed parent* — into a column, while still surfacing the
+genuinely interesting compensatory cases rather than discarding them.
+
+## User labels in every output
+
+The code works internally in the canonical roles `variable` / `fixed`, but the
+tables and report show your names (`variable_label` / `fixed_label` in the
+config). On write, the canonical column names and `direction` values are
+rewritten to the labels (`variable_count` → `kunthii_count`,
+`direction = kunthii`) and the labels are stamped into the file's `#` header; on
+read, the header labels are mapped back to canonical so the stages still chain.
+Files with no ASErtain label header (an external DESeq2 DE table) are read
+verbatim. This lives in `labels.py` / `tables.py`.
 
 ## File-format contracts
 

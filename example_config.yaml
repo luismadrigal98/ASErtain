@@ -31,10 +31,33 @@ reference:
   identity: variable
 
 # All parent individuals (may be heterozygous — outbred is fine).
+#
+# Optional: give a parent `flowers:` (per-sample RNA BAMs) to enable the parental
+# differential-expression stage (variable vs fixed), which sanity-checks ASE
+# candidates — a real ASE shift should point toward the more-expressed parent.
+# Genotyping still uses only `vcf_sample`; the flowers are used by DE counting.
+# For a trustworthy DE, sample >= 2 genotypes per lineage (else it is
+# pseudoreplicated and only the fold-change DIRECTION is reliable). You may
+# instead supply an external DESeq2/edgeR table to `asertain contrast`.
 parents:
-  - { name: p1, vcf_sample: SPA_parent1, lineage: variable }
-  - { name: p2, vcf_sample: SPA_parent2, lineage: variable }
-  - { name: q1, vcf_sample: SPB_parent1, lineage: fixed }
+  - name: p1
+    vcf_sample: SPA_parent1
+    lineage: variable
+    flowers:
+      - { name: p1_rna1, bam: /path/bams/p1_rna1.bam }
+      - { name: p1_rna2, bam: /path/bams/p1_rna2.bam }
+  - name: p2
+    vcf_sample: SPA_parent2
+    lineage: variable
+    flowers:
+      - { name: p2_rna1, bam: /path/bams/p2_rna1.bam }
+      - { name: p2_rna2, bam: /path/bams/p2_rna2.bam }
+  - name: q1
+    vcf_sample: SPB_parent1
+    lineage: fixed
+    flowers:
+      - { name: q1_rna1, bam: /path/bams/q1_rna1.bam }
+      - { name: q1_rna2, bam: /path/bams/q1_rna2.bam }
 
 # F1 plants = biological replicates. Each names its mother (variable lineage),
 # father (fixed lineage), its own VCF column, and its flowers (RNA samples).

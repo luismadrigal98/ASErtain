@@ -86,6 +86,45 @@ def samtools_mpileup(bam: str, region: str, *,
     return res.stdout.strip()
 
 
+def samtools_count(bam: str, region: str, *,
+                   min_mapq: int = 20,
+                   exclude_flags: int = 0x900,
+                   samtools: str = "samtools") -> int:
+    """Count primary alignments overlapping `region` (e.g. 'chr1:100-2000').
+
+    Used by the parental-expression stage as a lightweight gene read count.
+    `exclude_flags` defaults to 0x900 = secondary (0x100) + supplementary
+    (0x800), so each read is counted once. This is a gene-*region* count (it
+    includes intronic overlap), a deliberate pure-`samtools` proxy for a proper
+    exon-union count — adequate for the cis/trans sanity check, documented as
+    approximate.
+    """
+    cmd = [samtools, "view", "-c", "-q", str(min_mapq),
+           "-F", str(exclude_flags), bam, region]
+    res = run(cmd)
+    out = res.stdout.strip()
+    return int(out) if out else 0
+
+
+def samtools_total_mapped(bam: str, samtools: str = "samtools") -> int:
+    """Total mapped reads in a BAM via `idxstats` (one fast call).
+
+    Used as the library size for depth normalisation in the parental-DE stage.
+    Robust for small candidate-gene panels where a median-of-ratios size factor
+    (which needs many genes) would be unstable.
+    """
+    res = run([samtools, "idxstats", bam])
+    total = 0
+    for line in res.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 3:
+            try:
+                total += int(parts[2])     # column 3 = mapped read-segments
+            except ValueError:
+                continue
+    return total
+
+
 def ensure_bam_index(bam: str, samtools: str = "samtools") -> None:
     """Index a BAM if no index exists alongside it.
 

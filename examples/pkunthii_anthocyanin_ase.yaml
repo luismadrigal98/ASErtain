@@ -26,10 +26,39 @@ reference:
   fasta: PGA_assembly_shortnames.fasta
   identity: variable          # reference == one kunthii genome
 
+# Parents carry their per-flower RNA libraries too. The genotyping stages use
+# only `vcf_sample` (the pooled VCF column); the `flowers:` here feed the
+# OPTIONAL parental differential-expression stage (variable vs fixed), which
+# sanity-checks ASE candidates: a real ASE shift should point toward the parent
+# the DE says is more highly expressed. NB only ONE fixed-lineage genotype
+# (amphorellae) is sampled, so that DE is pseudoreplicated — trust the direction
+# more than the p-value (ASErtain warns), or feed an external replicated DE table.
 parents:
-  - { name: k2,          vcf_sample: k2,          lineage: variable }
-  - { name: k3,          vcf_sample: k3,          lineage: variable }
-  - { name: amphorellae, vcf_sample: amphorellae, lineage: fixed }
+  - name: k2
+    vcf_sample: k2
+    lineage: variable
+    flowers:
+      - { name: k2_29,  bam: BAM_files/k2_cor_29_Aligned.bam }
+      - { name: k2_29B, bam: BAM_files/k2_cor_29B_Aligned.bam }
+      - { name: k2_31,  bam: BAM_files/k2_cor_31_Aligned.bam }
+      - { name: k2_33,  bam: BAM_files/k2_cor_33_Aligned.bam }
+  - name: k3
+    vcf_sample: k3
+    lineage: variable
+    flowers:
+      - { name: k3_23, bam: BAM_files/k3_cor_23_Aligned.bam }
+      - { name: k3_25, bam: BAM_files/k3_cor_25_Aligned.bam }
+      - { name: k3_27, bam: BAM_files/k3_cor_27_Aligned.bam }
+  - name: amphorellae
+    vcf_sample: amphorellae
+    lineage: fixed
+    flowers:
+      - { name: a_1B, bam: BAM_files/a_cor_1B_Aligned.bam }
+      - { name: a_3,  bam: BAM_files/a_cor_3_Aligned.bam }
+      - { name: a_5,  bam: BAM_files/a_cor_5_Aligned.bam }
+      - { name: a_7,  bam: BAM_files/a_cor_7_Aligned.bam }
+      - { name: a_9,  bam: BAM_files/a_cor_9_Aligned.bam }
+      - { name: a_10, bam: BAM_files/a_cor_10_Aligned.bam }
 
 f1_plants:
   - name: F1_k2a1                 # k2 (mother) x amphorellae (father)

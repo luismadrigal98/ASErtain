@@ -39,6 +39,10 @@ class Parent:
     name: str                 # short label, e.g. 'k1'
     vcf_sample: str           # the column name in the VCF
     lineage: str              # 'variable' or 'fixed'
+    # Optional per-sample RNA libraries for this parent (one BAM per flower /
+    # library). Only needed for the parental differential-expression stage; the
+    # genotyping stages use the VCF column, not these BAMs.
+    flowers: List["Flower"] = field(default_factory=list)
 
 
 @dataclass
@@ -95,6 +99,24 @@ class CrossConfig:
     @property
     def fixed_parents(self) -> List[Parent]:
         return [p for p in self.parents if p.lineage == FIXED]
+
+    @property
+    def parental_flowers(self) -> List["Flower"]:
+        """All parental RNA libraries (flowers), across every parent."""
+        return [fl for p in self.parents for fl in p.flowers]
+
+    def has_parental_expression(self) -> bool:
+        """True if at least one parent of each lineage declares RNA libraries,
+        so a variable-vs-fixed parental DE can be computed."""
+        var = any(p.flowers for p in self.variable_parents)
+        fix = any(p.flowers for p in self.fixed_parents)
+        return var and fix
+
+    def lineage_of_parent_flower(self, flower_name: str) -> Optional[str]:
+        for p in self.parents:
+            if any(fl.name == flower_name for fl in p.flowers):
+                return p.lineage
+        return None
 
     # -- F1 lookups --------------------------------------------------------
     @property
@@ -167,7 +189,10 @@ def load_config(path: str) -> CrossConfig:
 
 def _load_new(raw: dict, common: dict) -> CrossConfig:
     parents = [Parent(name=p["name"], vcf_sample=p["vcf_sample"],
-                      lineage=p.get("lineage", VARIABLE))
+                      lineage=p.get("lineage", VARIABLE),
+                      flowers=[Flower(name=fl["name"], bam=fl["bam"],
+                                      vcf_sample=fl.get("vcf_sample"))
+                               for fl in p.get("flowers", [])])
                for p in raw.get("parents", [])]
     plants: List[F1Plant] = []
     for pl in raw["f1_plants"]:

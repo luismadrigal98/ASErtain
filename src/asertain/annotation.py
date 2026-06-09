@@ -40,6 +40,18 @@ class GeneIndex:
     def n_genes(self) -> int:
         return sum(len(v) for v in self._by_chrom.values())
 
+    def genes(self) -> List[Gene]:
+        """Every gene in the index (used by the parental-expression stage to
+        define per-gene counting intervals)."""
+        return [g for genes in self._by_chrom.values() for g in genes]
+
+    def iter_genes(self):
+        """Yield (chrom, Gene) for every gene — chrom is needed to build the
+        samtools counting region."""
+        for chrom, genes in self._by_chrom.items():
+            for g in genes:
+                yield chrom, g
+
     @classmethod
     def from_file(cls, path: str) -> "GeneIndex":
         is_gff3 = path.endswith((".gff3", ".gff", ".gff3.gz", ".gff.gz"))

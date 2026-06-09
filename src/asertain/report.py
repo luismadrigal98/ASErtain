@@ -10,6 +10,7 @@ import html
 import os
 from typing import Dict, List, Optional
 
+from .labels import Labels
 from .tables import read_table
 
 
@@ -23,7 +24,8 @@ def _summary_counts(genes: List[Dict]) -> Dict[str, int]:
             "variable_biased": var, "fixed_biased": fix}
 
 
-def _maybe_plot(genes: List[Dict], path: str) -> Optional[str]:
+def _maybe_plot(genes: List[Dict], path: str,
+                labels: Labels = Labels()) -> Optional[str]:
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -45,7 +47,7 @@ def _maybe_plot(genes: List[Dict], path: str) -> Optional[str]:
     fig, ax = plt.subplots(figsize=(6, 5))
     ax.scatter(xs, ys, c=cols, s=12, alpha=0.7)
     ax.axvline(0, color="k", lw=0.5)
-    ax.set_xlabel("log2 allelic ratio (variable / fixed)")
+    ax.set_xlabel(f"log2 allelic ratio ({labels.variable} / {labels.fixed})")
     ax.set_ylabel("-log10 q-value")
     ax.set_title("F1 allele-specific expression")
     fig.tight_layout()
@@ -60,19 +62,24 @@ def _safe_log10(x: float) -> float:
 
 
 def write_report(gene_ase_tsv: str, out_html: str, *,
-                 title: str = "ASErtain report") -> str:
+                 title: str = "ASErtain report",
+                 labels: Optional[Labels] = None) -> str:
+    labels = labels or Labels()
     genes = read_table(gene_ase_tsv)
     counts = _summary_counts(genes)
     plot_path = os.path.join(os.path.dirname(out_html) or ".",
                              "ase_volcano.png")
-    plotted = _maybe_plot(genes, plot_path)
+    plotted = _maybe_plot(genes, plot_path, labels)
+
+    def _dir_label(g: Dict) -> str:
+        return labels.value_to_display(str(g.get("direction", "")))
 
     rows = "\n".join(
-        "<tr>" + "".join(f"<td>{html.escape(str(g.get(c, '')))}</td>"
-                         for c in ("gene_id", "gene_name", "n_snps", "n_plants",
-                                   "log2_ratio", "p_primary", "q_value",
-                                   "direction", "consistent_backgrounds",
-                                   "fixed_allele_seen", "ase_call")) + "</tr>"
+        "<tr>" + "".join(f"<td>{html.escape(str(val))}</td>" for val in (
+            g.get("gene_id", ""), g.get("gene_name", ""), g.get("n_snps", ""),
+            g.get("n_plants", ""), g.get("log2_ratio", ""), g.get("p_primary", ""),
+            g.get("q_value", ""), _dir_label(g), g.get("consistent_backgrounds", ""),
+            g.get("fixed_allele_seen", ""), g.get("ase_call", ""))) + "</tr>"
         for g in genes[:500]
     )
     img = (f'<img src="{os.path.basename(plotted)}" style="max-width:500px">'
@@ -85,15 +92,18 @@ table{{border-collapse:collapse;font-size:13px}}
 td,th{{border:1px solid #ccc;padding:2px 6px}}
 th{{background:#f0f0f0}} .k{{color:#666}}</style></head><body>
 <h1>{html.escape(title)}</h1>
+<p class="k">Lineages: variable = <b>{html.escape(labels.variable)}</b>,
+fixed = <b>{html.escape(labels.fixed)}</b></p>
 <p class="k">Genes tested: {counts['genes_tested']} &nbsp;|&nbsp;
 ASE genes: <b>{counts['ase_genes']}</b> &nbsp;|&nbsp;
-variable-biased: {counts['variable_biased']} &nbsp;|&nbsp;
-fixed-biased: {counts['fixed_biased']}</p>
+{html.escape(labels.variable)}-biased: {counts['variable_biased']} &nbsp;|&nbsp;
+{html.escape(labels.fixed)}-biased: {counts['fixed_biased']}</p>
 {img}
 <h2>Per-gene results (first 500)</h2>
 <table><tr><th>gene_id</th><th>name</th><th>nSNP</th><th>nPlant</th>
-<th>log2</th><th>p</th><th>q</th><th>dir</th><th>consistent</th>
-<th>fixedSeen</th><th>ASE</th></tr>
+<th>log2({html.escape(labels.variable)}/{html.escape(labels.fixed)})</th>
+<th>p</th><th>q</th><th>dir</th><th>consistent</th>
+<th>{html.escape(labels.fixed)}Seen</th><th>ASE</th></tr>
 {rows}</table></body></html>"""
     with open(out_html, "w") as fh:
         fh.write(doc)

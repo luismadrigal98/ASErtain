@@ -43,13 +43,19 @@ asertain run \
 …or run the stages individually:
 
 ```bash
-asertain diagnose --config my_cross.yaml --vcf variants.vcf.gz --out runs/study
-asertain count    --config my_cross.yaml --snps runs/study.diagnostic_snps.tsv --out runs/study --bias-mode report
-asertain test     --counts runs/study.allele_counts.tsv --out runs/study
-asertain contrast --gene-ase runs/study.gene_ase.tsv --parental-de parental_DE.tsv --out runs/study
-asertain report   --gene-ase runs/study.gene_ase.tsv --out runs/study
-asertain check    --config my_cross.yaml          # validate config + tools
+asertain diagnose    --config my_cross.yaml --vcf variants.vcf.gz --out runs/study
+asertain count       --config my_cross.yaml --snps runs/study.informative_snps.tsv --out runs/study --bias-mode report
+asertain test        --counts runs/study.allele_counts.tsv --out runs/study   # --flower-norm equalize (default)
+asertain parental-de --config my_cross.yaml --out runs/study                  # variable-vs-fixed DE from parent BAMs
+asertain contrast    --gene-ase runs/study.gene_ase.tsv --parental-de runs/study.parental_de.tsv --out runs/study
+asertain report      --gene-ase runs/study.gene_ase.tsv --out runs/study
+asertain check       --config my_cross.yaml          # validate config + tools
 ```
+
+`asertain run` can build the parental DE itself with `--compute-parental-de`
+(needs `flowers:` under the parents in the config) and then use it for the
+cis/trans contrast and the ASE-direction sanity check — or pass your own
+DESeq2/edgeR table with `--parental-de`.
 
 ## Pipeline stages
 
@@ -58,10 +64,18 @@ asertain check    --config my_cross.yaml          # validate config + tools
 | `diagnose` | multi-sample VCF + config | `*.informative_snps.tsv`, `*.bed` |
 | `count`    | informative SNPs + F1 flower BAMs | `*.allele_counts.tsv` |
 | `test`     | allele counts | `*.gene_ase.tsv` |
-| `contrast` | gene ASE + parental DE | `*.cis_trans.tsv` |
+| `parental-de` | config (parent RNA BAMs) + GTF | `*.parental_de.tsv` (variable vs fixed) |
+| `contrast` | gene ASE + parental DE | `*.cis_trans.tsv` (+ ASE-vs-DE sanity check) |
 | `report`   | gene ASE | `*.report.html` (+ plot) |
 | `run`      | config + VCF (+ DE) | all of the above |
 | `mask-reference` | informative SNPs + reference | N-masked FASTA (+ WASP SNP files) |
+
+**Labels in every output.** You set `variable_label` / `fixed_label` in the
+config (e.g. `kunthii` / `amphorellae`); the canonical `variable`/`fixed` column
+names and `direction` values are rewritten to your labels in every table and in
+the report (so `variable_count` → `kunthii_count`, `direction = kunthii`). The
+labels are stamped into each file's header and mapped back to canonical on read,
+so the stages still chain.
 
 Designed for **outbred parents**, **nested replication** (RNA samples within
 individuals), and **RNA-seq-only** data.
@@ -73,13 +87,16 @@ gene call can be traced and explained:
 
 | File | Granularity |
 |------|-------------|
-| `*.allele_counts.tsv`     | per **flower × SNP** (raw counts, `variable_is_ref`, `tier`) |
+| `*.allele_counts.tsv`     | per **flower × SNP** (raw counts, `<var>_is_ref`, `tier`) |
+| `*.gene_snp_counts.tsv`   | per **gene × SNP** (plants + flowers collapsed, with a per-plant split) |
 | `*.snp_gene_counts.tsv`   | per **gene × SNP × plant** (flowers summed, per-SNP ratio) |
 | `*.plant_gene_stats.tsv`  | per **gene × plant** (K, N, n_snps, ρ, method, p) → fed to max-p |
 | `*.gene_ase.tsv`          | per **gene** (the call) |
 
 Reading them bottom-up shows exactly how raw reads become a call: flower counts →
-per-SNP×plant → per-plant test → `max-p` across plants → gene.
+per gene×SNP → per gene×SNP×plant → per-plant test → `max-p` across plants → gene.
+The per-plant K/N reflect the **flower normalisation** (see below): each flower
+is rescaled so a deeply sequenced one cannot dominate its plant's ratio.
 
 ## What makes the calls trustworthy
 
@@ -96,15 +113,32 @@ per-SNP×plant → per-plant test → `max-p` across plants → gene.
   per-plant logit t-test), with a cross-background consistency requirement. The
   anti-conservative pooled binomial is reported only as a descriptor, and a
   `fixed_allele_seen` column separates real complete-ASE from mapping dropout.
+* **Flower normalisation** — flowers (technical replicates) differ in depth, so
+  before pooling each is rescaled by a per-plant size factor (`--flower-norm
+  equalize`, default) and a deeply sequenced flower can no longer dominate its
+  plant's allelic ratio. Each flower's own ratio is preserved (both alleles
+  scale together); `--flower-norm none` recovers raw summing.
+* **Parental-DE sanity check** — `asertain parental-de` computes variable-vs-fixed
+  expression from the parents' RNA BAMs (library-size-normalised, pure-Python),
+  and `contrast` checks each ASE candidate against it: a real cis shift should
+  point toward the more-expressed parent (`sanity_check = concordant`); an ASE
+  call opposing the DE (`discordant_compensatory`) is flagged as opposing
+  cis/trans, not silently trusted.
 
 ## Status
 
 Fully implemented and tested (synthetic + live BAMs): `diagnose`, `count`,
-`test`, `mask-reference`, plus the CLI, config (new + legacy schema), and
-file-format layer. Working scaffolds to extend: `contrast` (category logic done;
-a formal *trans* significance test is marked for extension), `report`, and the
-WASP remap chain in `external.py` (SNP-file generation done; the aligner step
-needs your alignment command).
+`test` (with flower normalisation), `parental-de`, `mask-reference`, plus the
+CLI, config (new + legacy schema), the label-aware file-format layer, and the
+ASE-vs-DE sanity check in `contrast`. Working scaffolds to extend: `contrast`'s
+formal *trans* significance test (the category logic and DE-concordance check
+are done), `report`, and the WASP remap chain in `external.py` (SNP-file
+generation done; the aligner step needs your alignment command).
+
+The parental-DE stage is a lightweight, pure-`samtools` gene-region count +
+library-size-normalised Welch test, intended for **candidate-gene panels** and
+as a **direction sanity check**. For a genome-wide, publication-grade DE table,
+run featureCounts/HTSeq + DESeq2/edgeR and feed it to `contrast --parental-de`.
 
 ## Layout
 
@@ -116,8 +150,10 @@ src/asertain/
   genotypes.py    per-parent genotyping + diagnostic-SNP logic
   counting.py     mpileup allele counting + reference-bias modes
   stats.py        binomial / beta-binomial / BH / per-replicate logit tests
-  testing.py      gene-level aggregation and ASE calls
-  contrast.py     cis/trans decomposition
+  testing.py      gene-level aggregation, flower normalisation, ASE calls
+  expression.py   parental differential expression (variable vs fixed)
+  contrast.py     cis/trans decomposition + ASE-vs-DE sanity check
+  labels.py       user labels (variable/fixed → display names) for all outputs
   annotation.py   GTF/GFF3 gene index
   tables.py       inter-stage TSV read/write contracts
   external.py     subprocess wrappers (samtools, GATK, WASP) + tool checks

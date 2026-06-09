@@ -11,6 +11,12 @@ Procedure per gene:
      significant — valid and conservative at small n, and it bakes in the
      cross-background consistency requirement (audit C2/C3/M4).
 
+Flowers contribute unequally (a deeply sequenced flower would otherwise dominate
+its plant's pooled allelic ratio). Before summing, each flower is rescaled by a
+per-plant **size factor** so every flower of a plant contributes comparably —
+see `flower_size_factors`. This is on by default (`flower_norm="equalize"`) and
+preserves each flower's own allelic ratio (both alleles scale together).
+
 Flags surfaced for honesty under a single-parent reference (audit M3, M5):
   * fixed_allele_seen / n_plants_fixed_seen — distinguishes real complete ASE
     from an allele lost to reference-mapping bias.
@@ -28,6 +34,7 @@ from . import stats as st
 from .stats import cont_ratio
 
 MIN_SNPS_FOR_BETABINOM = 3
+FLOWER_NORM_MODES = ("equalize", "none")
 
 GENE_COLS = [
     "gene_id", "gene_name", "n_snps", "n_plants", "n_backgrounds", "n_flowers",
@@ -47,14 +54,79 @@ def _gene_null(records: List[Dict]) -> float:
     return num / den if den else 0.5
 
 
-def _plant_snp_counts(records: List[Dict]) -> Dict[str, List[Tuple[int, int]]]:
-    """plant -> list of (variable, total) per SNP, summing flowers within plant."""
-    per: Dict[str, Dict[str, List[int]]] = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+# ---------------------------------------------------------------------------
+# Flower-contribution normalisation (audit/task: technical replicates differ in
+# depth, so a single deep flower must not dominate its plant's allelic ratio)
+# ---------------------------------------------------------------------------
+
+def flower_size_factors(records: List[Dict], *,
+                        mode: str = "equalize") -> Dict[Tuple[str, str], float]:
+    """Per-(plant, flower) size factors that equalise flower contribution.
+
+    A flower's *library* depth is summed across **all** SNPs of its plant (so
+    the factor is a stable library-level quantity, not a noisy per-gene one) and
+    divided by the geometric mean depth of that plant's flowers. Dividing a
+    flower's counts by this factor rescales every flower of a plant to the same
+    effective depth, so deep and shallow flowers contribute comparably. Because
+    both alleles are divided by the *same* factor, each flower's allelic ratio is
+    untouched — only its weight in the pooled (k, n) changes.
+
+    `mode="none"` returns an empty map (callers then treat every factor as 1.0,
+    i.e. the previous raw-summing behaviour).
+
+    Honesty note: equalising *weight* means each flower's ratio is trusted
+    equally regardless of its depth — a deep flower is down-weighted, a shallow
+    one up-weighted. That is the intended behaviour (a flower is an observation,
+    not a depth quota) but it reweights statistical confidence rather than
+    keeping it strictly depth-proportional. The plant remains the unit of
+    inference, and the across-plant max-p rule plus the cross-background
+    consistency requirement are the real guards against any single noisy flower.
+    """
+    if mode == "none":
+        return {}
+    if mode not in FLOWER_NORM_MODES:
+        raise ValueError(f"unknown flower_norm mode '{mode}'; "
+                         f"choose from {FLOWER_NORM_MODES}")
+    depth: Dict[Tuple[str, str], float] = defaultdict(float)
+    flowers_of_plant: Dict[str, set] = defaultdict(set)
     for r in records:
+        d = r["variable_count"] + r["fixed_count"]
+        depth[(r["plant"], r["flower"])] += d
+        flowers_of_plant[r["plant"]].add(r["flower"])
+
+    factors: Dict[Tuple[str, str], float] = {}
+    for plant, flowers in flowers_of_plant.items():
+        positive = [depth[(plant, f)] for f in flowers if depth[(plant, f)] > 0]
+        if len(positive) < 2:
+            # One (informative) flower: nothing to equalise.
+            for f in flowers:
+                factors[(plant, f)] = 1.0
+            continue
+        gm = math.exp(sum(math.log(d) for d in positive) / len(positive))
+        for f in flowers:
+            d = depth[(plant, f)]
+            factors[(plant, f)] = (d / gm) if d > 0 else 1.0
+    return factors
+
+
+def _plant_snp_counts(records: List[Dict],
+                      size_factors: Optional[Dict[Tuple[str, str], float]] = None,
+                      ) -> Dict[str, List[Tuple[int, int]]]:
+    """plant -> list of (variable, total) per SNP, summing size-factor-rescaled
+    flowers within the plant. With `size_factors=None` (or empty) this is the
+    plain raw sum."""
+    sf = size_factors or {}
+    per: Dict[str, Dict[str, List[float]]] = defaultdict(
+        lambda: defaultdict(lambda: [0.0, 0.0]))
+    for r in records:
+        w = sf.get((r["plant"], r["flower"]), 1.0) or 1.0
         slot = per[r["plant"]][r["snp_id"]]
-        slot[0] += r["variable_count"]
-        slot[1] += r["variable_count"] + r["fixed_count"]
-    return {p: [(v, n) for v, n in snps.values()] for p, snps in per.items()}
+        slot[0] += r["variable_count"] / w
+        slot[1] += (r["variable_count"] + r["fixed_count"]) / w
+    # Round the rescaled effective counts back to integers for the
+    # binomial / beta-binomial likelihoods. Rounding is monotone so v<=n holds.
+    return {p: [(int(round(v)), int(round(n))) for v, n in snps.values()]
+            for p, snps in per.items()}
 
 
 def _plant_test(pairs: List[Tuple[int, int]], null_p: float) -> Optional[Dict]:
@@ -84,7 +156,8 @@ def test_genes(count_records: List[Dict], *,
                alpha: float = 0.05,
                min_effect_log2: float = 0.0,
                min_plants: int = 2,
-               ref_is_variable: bool = False) -> List[Dict]:
+               ref_is_variable: bool = False,
+               flower_norm: str = "equalize") -> List[Dict]:
     by_gene: Dict[str, List[Dict]] = defaultdict(list)
     for r in count_records:
         if r.get("gene_id") in (None, "", "intergenic"):
@@ -92,11 +165,12 @@ def test_genes(count_records: List[Dict], *,
         by_gene[r["gene_id"]].append(r)
 
     bg_of_plant = {r["plant"]: r["background"] for r in count_records}
+    size_factors = flower_size_factors(count_records, mode=flower_norm)
     results: List[Dict] = []
 
     for gene_id, recs in by_gene.items():
         null_p = _gene_null(recs)
-        plant_pairs = _plant_snp_counts(recs)
+        plant_pairs = _plant_snp_counts(recs, size_factors)
 
         plant_res: Dict[str, Dict] = {}
         for plant, pairs in plant_pairs.items():
@@ -119,11 +193,14 @@ def test_genes(count_records: List[Dict], *,
         p_iut = max(r["p"] for r in plant_res.values())
         methods = sorted({r["method"] for r in plant_res.values()})
 
-        # Pooled effect for display.
+        # Raw read totals (provenance — actual reads observed).
         v_tot = sum(r["variable_count"] for r in recs)
         f_tot = sum(r["fixed_count"] for r in recs)
-        n_tot = v_tot + f_tot
-        mean_ratio = (v_tot / n_tot) if n_tot else null_p
+        # Displayed effect uses the flower-NORMALISED, plant-summed counts so the
+        # ratio matches what the per-plant tests actually saw.
+        norm_k = sum(k for pairs in plant_pairs.values() for k, _ in pairs)
+        norm_n = sum(n for pairs in plant_pairs.values() for _, n in pairs)
+        mean_ratio = (norm_k / norm_n) if norm_n else null_p
         log2_ratio = (math.log2(mean_ratio / (1 - mean_ratio))
                       if 0 < mean_ratio < 1 else float("nan"))
 
@@ -195,6 +272,15 @@ SNP_DETAIL_COLS = [
     "allelic_depth", "variable_ratio", "null_p",
 ]
 
+# Per gene × SNP (plants and flowers collapsed) — the fundamental ASE evidence
+# unit. Lets a reader verify the counts behind every gene without expanding to
+# the full gene×SNP×plant table.
+SNP_GENE_COLS = [
+    "gene_id", "gene_name", "chrom", "pos", "snp_id", "tier",
+    "n_plants", "n_flowers", "variable_count", "fixed_count", "other_count",
+    "allelic_depth", "variable_ratio", "per_plant_counts", "null_p",
+]
+
 PLANT_DETAIL_COLS = [
     "gene_id", "gene_name", "plant", "background", "n_snps",
     "variable_reads", "fixed_reads", "allelic_depth",
@@ -246,9 +332,60 @@ def snp_plant_detail(count_records: List[Dict]) -> List[Dict]:
     return rows
 
 
-def plant_gene_detail(count_records: List[Dict]) -> List[Dict]:
+def snp_gene_summary(count_records: List[Dict]) -> List[Dict]:
+    """One row per (gene, SNP): flowers and plants collapsed.
+
+    The fundamental ASE evidence unit — the raw (observed) variable/fixed counts
+    behind each gene, with a compact per-plant breakdown so the plant-level split
+    is still visible without the full gene×SNP×plant expansion.
+    """
+    by_gene: Dict[str, List[Dict]] = defaultdict(list)
+    for r in count_records:
+        if r.get("gene_id") in (None, "", "intergenic"):
+            continue
+        by_gene[r["gene_id"]].append(r)
+
+    rows: List[Dict] = []
+    for gene_id, recs in by_gene.items():
+        null_p = _gene_null(recs)
+        by_snp: Dict[str, List[Dict]] = defaultdict(list)
+        for r in recs:
+            by_snp[r["snp_id"]].append(r)
+        for snp_id, srecs in by_snp.items():
+            m = srecs[0]
+            v = sum(r["variable_count"] for r in srecs)
+            f = sum(r["fixed_count"] for r in srecs)
+            o = sum(r["other_count"] for r in srecs)
+            depth = v + f
+            per_plant: Dict[str, List[int]] = defaultdict(lambda: [0, 0])
+            for r in srecs:
+                per_plant[r["plant"]][0] += r["variable_count"]
+                per_plant[r["plant"]][1] += r["variable_count"] + r["fixed_count"]
+            pp = ";".join(f"{p}={vv}/{nn}"
+                          for p, (vv, nn) in sorted(per_plant.items()))
+            rows.append({
+                "gene_id": gene_id, "gene_name": m.get("gene_name", gene_id),
+                "chrom": m["chrom"], "pos": m["pos"], "snp_id": snp_id,
+                "tier": m.get("tier", ""),
+                "n_plants": len(per_plant),
+                "n_flowers": len({r["flower"] for r in srecs}),
+                "variable_count": v, "fixed_count": f, "other_count": o,
+                "allelic_depth": depth,
+                "variable_ratio": round(v / depth, 4) if depth else "NA",
+                "per_plant_counts": pp,
+                "null_p": round(null_p, 4),
+            })
+    rows.sort(key=lambda r: (r["gene_id"], r["chrom"], r["pos"]))
+    return rows
+
+
+def plant_gene_detail(count_records: List[Dict], *,
+                      flower_norm: str = "equalize") -> List[Dict]:
     """One row per (gene, plant): the exact input and output of each per-plant
-    test (K_P, N_P, n_snps, rho, method, p) that the max-p combine consumes."""
+    test (K_P, N_P, n_snps, rho, method, p) that the max-p combine consumes.
+
+    Uses the same flower size-factor normalisation as `test_genes`, so these
+    K/N are precisely the numbers the per-plant test was run on."""
     by_gene: Dict[str, List[Dict]] = defaultdict(list)
     for r in count_records:
         if r.get("gene_id") in (None, "", "intergenic"):
@@ -257,11 +394,12 @@ def plant_gene_detail(count_records: List[Dict]) -> List[Dict]:
 
     bg_of_plant = {r["plant"]: r["background"] for r in count_records}
     name_of_gene = {r["gene_id"]: r.get("gene_name", r["gene_id"]) for r in count_records}
+    size_factors = flower_size_factors(count_records, mode=flower_norm)
 
     rows: List[Dict] = []
     for gene_id, recs in by_gene.items():
         null_p = _gene_null(recs)
-        for plant, pairs in _plant_snp_counts(recs).items():
+        for plant, pairs in _plant_snp_counts(recs, size_factors).items():
             res = _plant_test(pairs, null_p)
             if res is None:
                 continue
