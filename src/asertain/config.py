@@ -163,8 +163,10 @@ def _load_raw(path: str) -> dict:
 
 
 def load_config(path: str) -> CrossConfig:
+    if not path:
+        raise FileNotFoundError("Config path is empty (did you pass an unset variable like \"$CONFIG\"?)")
     if not os.path.exists(path):
-        raise FileNotFoundError(path)
+        raise FileNotFoundError(f"'{path}'")
     raw = _load_raw(path)
     ref = Reference(**(raw.get("reference") or {}))
     common = dict(
