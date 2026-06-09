@@ -38,6 +38,7 @@ def run_pipeline(config: str, vcf: str, out_prefix: str, *,
                  min_effect_log2: float = 0.0,
                  min_plants: int = 2,
                  flower_norm: str = "equalize",
+                 counter: str = "pileup",
                  samtools: str = "samtools",
                  verbose: bool = False) -> dict:
     cfg = load_config(config)
@@ -58,14 +59,21 @@ def run_pipeline(config: str, vcf: str, out_prefix: str, *,
     print(f"      {len(snps)} informative SNPs "
           f"({dstats.shared} shared, {dstats.plant_specific} plant-specific)")
 
-    print("[2/5] count: allele-specific counting in F1 flowers ...")
-    counts = counting.count_flowers(
-        cfg, snps, bias_mode=bias_mode, control_table=control_table,
-        min_mapq=min_mapq, min_baseq=min_baseq, min_depth=min_count_depth,
-        samtools=samtools)
+    if counter == "haplotype":
+        from .haplotype import count_flowers_haplotype
+        print("[2/5] count: read-backed haplotype counting in F1 flowers ...")
+        counts = count_flowers_haplotype(
+            cfg, snps, min_mapq=min_mapq, min_baseq=min_baseq,
+            min_depth=min_count_depth, samtools=samtools)
+    else:
+        print("[2/5] count: allele-specific (per-SNP) counting in F1 flowers ...")
+        counts = counting.count_flowers(
+            cfg, snps, bias_mode=bias_mode, control_table=control_table,
+            min_mapq=min_mapq, min_baseq=min_baseq, min_depth=min_count_depth,
+            samtools=samtools)
     write_allele_counts(counts, f"{out_prefix}.allele_counts.tsv",
                         bias_mode=bias_mode, labels=labels)
-    print(f"      {len(counts)} SNP×flower observations")
+    print(f"      {len(counts)} {'gene×flower' if counter=='haplotype' else 'SNP×flower'} observations")
 
     print("[3/5] test: nested (flower→plant) gene-level ASE ...")
     genes = testing.test_genes(

@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Allele-specific expression discovery & validation for F1 hybrids (Penstemon)"
 readme = "README.md"
 requires-python = ">=3.9"
-authors = [{ name = "Luis Javier Madrigal-Roca" }]
+authors = [{ name = "Luis Javier Madrigal-Roca", name = "John K. Kelly" }]
 license = { text = "MIT" }
 dependencies = [
     "numpy>=1.21",

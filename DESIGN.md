@@ -40,7 +40,7 @@ The `contrast` stage classifies each gene into conserved / cis-only / trans-only
 
 ```
 diagnose        VCF  -> informative SNPs    (phased per F1 plant from its parents)
-count           BAMs -> per-SNP allele counts (mpileup; flag-driven ref-bias handling)
+count           BAMs -> allele counts (per-SNP pileup, or read-backed haplotype: --counter)
 test            counts -> gene-level ASE    (nested flower->plant statistics, flower-normalised)
 parental-de     parent RNA BAMs -> variable-vs-fixed DE (total = cis + trans)
 contrast        gene ASE + parental DE -> cis/trans classes + ASE-vs-DE sanity check
@@ -173,6 +173,36 @@ depth, so the reweighting is mild and mainly caps the occasional outlier-deep
 flower that would otherwise set the call on its own (see the worked example in
 the test suite).
 
+### Read-backed counting removes within-gene SNP non-independence
+
+The per-SNP pileup counter treats each informative SNP as a separate
+observation, but SNPs in one gene are **not** independent: a read/fragment
+spanning several SNPs is counted once at *each*, so the same molecule is
+double-counted and the per-plant depth — and p-value — is inflated. The
+beta-binomial absorbs SNP-to-SNP *dispersion* (via ρ) but not this *read-level*
+correlation.
+
+`--counter haplotype` fixes it at the level of the **read**. For each fragment
+overlapping a gene's informative SNPs, ASErtain reads the allele it carries at
+every such SNP (walking the CIGAR, so introns and indels are handled), assigns
+the *whole fragment* to the variable or fixed haplotype, and counts it **once**
+per gene. The result is a single (K, N) of genuinely independent reads per
+gene × plant, so the per-plant test is a clean **binomial over independent
+reads** — no SNP pseudo-replication. A fragment carrying *both* a variable and a
+fixed allele (sequencing error, mis-phased SNP, or recombinant) is conservatively
+called **ambiguous** and excluded from K/N (kept in `other_count` for QC); paired
+mates share a QNAME so their votes are pooled and the fragment counted once,
+which also removes mate-overlap double-counting.
+
+It needs no reference FASTA (the read's own base is used, not an mpileup match
+symbol) and works with the `nmask` / `wasp` de-biasing BAMs. It requires the
+SNPs to be gene-annotated (it groups by gene). `--counter pileup` (default)
+keeps the per-SNP behaviour and the across-SNP beta-binomial; choose `haplotype`
+when reads span multiple SNPs per gene (the usual case) for the most defensible
+per-plant statistics. The `test` stage is unchanged: haplotype counts arrive as
+one record per gene, so each gene×plant is a single (K, N) and the binomial path
+is taken; `n_snps` still reports the real number of SNPs phased into the reads.
+
 ## Parental differential expression and the ASE sanity check
 
 The F1 allelic ratio is **cis** only. The parental expression difference is
@@ -185,8 +215,16 @@ the parents' own RNA-seq:
 * normalise for sequencing depth by **library size** (`samtools idxstats` total
   mapped reads) — robust even for a handful of candidate genes, where a
   median-of-ratios size factor would be unstable;
-* test each gene variable-vs-fixed with a Welch t-test on log2(normalised count
-  + 1), oriented variable/fixed, BH-adjusted.
+* **collapse flowers to their genotype** (the biological unit) before testing,
+  exactly as F1 flowers collapse into their plant on the ASE side — so each
+  genotype counts once regardless of its flower count (amphorellae's 6 flowers
+  do not outvote k2's 4 + k3's 3) and the test is across genotypes, not across
+  pseudoreplicated flowers;
+* test each gene variable-vs-fixed with a Welch t-test on log2(genotype mean
+  + 1), oriented variable/fixed, BH-adjusted. A valid test needs ≥2 genotypes
+  per lineage; with one genotype it falls back to a flower-level test flagged
+  `method = welch_flower_pseudorep` (`n_variable`/`n_fixed` report the genotype
+  counts, `n_*_flowers` the flower counts).
 
 **Honesty.** Two limits are surfaced, not hidden. (a) Gene-region counts include
 intronic overlap — fine for a direction/magnitude check, not a substitute for a

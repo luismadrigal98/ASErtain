@@ -69,6 +69,12 @@ echo "  VCF samples : $(bcftools query -l "$WORK/anthocyanin.vcf.gz" | tr '\n' '
 echo "  biallelic SNPs: $(bcftools view -H "$WORK/anthocyanin.vcf.gz" | wc -l)"
 
 echo "############ 4. ASErtain pipeline (report-mode bias) ############"
+# --counter haplotype    : read-backed counting — assign each fragment to a
+#                          parental haplotype across all SNPs it covers and count
+#                          it ONCE per gene, so within-gene SNPs (which a read may
+#                          span) are not double-counted -> a clean per-plant
+#                          binomial over independent reads. (Use --counter pileup
+#                          for the classic per-SNP counts + across-SNP beta-binom.)
 # --flower-norm equalize : rescale each F1 flower so a deeply sequenced flower
 #                          cannot dominate its plant's allelic ratio (default).
 # --compute-parental-de  : also run variable-vs-fixed parental DE (from the
@@ -80,6 +86,7 @@ asertain run --config "$CONFIG" \
     --bias-mode report \
     --min-parent-depth 10 --maf-threshold 0.10 \
     --min-count-depth 10 --min-mapq 20 --min-baseq 20 \
+    --counter haplotype \
     --flower-norm equalize \
     --compute-parental-de --de-alpha 0.05 \
     --verbose                       # also write the per-SNP / per-plant audit tables

@@ -50,6 +50,13 @@ def _add_bias_opts(p: argparse.ArgumentParser) -> None:
 
 def _add_count_opts(p: argparse.ArgumentParser) -> None:
     g = p.add_argument_group("read counting")
+    g.add_argument("--counter", default="pileup",
+                   choices=["pileup", "haplotype"],
+                   help="'pileup': per-SNP allele counts (default). 'haplotype': "
+                        "read-backed — assign each fragment to a parental "
+                        "haplotype across all SNPs it covers and count it once "
+                        "per gene, so within-gene SNPs are not double-counted "
+                        "(needs gene-annotated SNPs; no reference FASTA needed)")
     g.add_argument("--min-mapq", type=int, default=20,
                    help="Min mapping quality (default: 20)")
     g.add_argument("--min-baseq", type=int, default=20,
@@ -117,7 +124,6 @@ def cmd_diagnose(args) -> int:
 
 def cmd_count(args) -> int:
     from .config import load_config
-    from .counting import count_flowers
     from .labels import Labels
     from .tables import read_informative_snps, write_allele_counts
 
@@ -125,10 +131,18 @@ def cmd_count(args) -> int:
     _ensure_out_dir(args.out)
     snps = read_informative_snps(args.snps)
     print(f"Loaded {len(snps)} informative SNPs from {args.snps}")
-    records = count_flowers(
-        cfg, snps, bias_mode=args.bias_mode, control_table=args.control_table,
-        min_mapq=args.min_mapq, min_baseq=args.min_baseq,
-        min_depth=args.min_count_depth, samtools=args.samtools)
+    if args.counter == "haplotype":
+        from .haplotype import count_flowers_haplotype
+        print("Counter: read-backed haplotype (one independent (K,N) per gene×plant)")
+        records = count_flowers_haplotype(
+            cfg, snps, min_mapq=args.min_mapq, min_baseq=args.min_baseq,
+            min_depth=args.min_count_depth, samtools=args.samtools)
+    else:
+        from .counting import count_flowers
+        records = count_flowers(
+            cfg, snps, bias_mode=args.bias_mode, control_table=args.control_table,
+            min_mapq=args.min_mapq, min_baseq=args.min_baseq,
+            min_depth=args.min_count_depth, samtools=args.samtools)
     write_allele_counts(records, f"{args.out}.allele_counts.tsv",
                         bias_mode=args.bias_mode, labels=Labels.from_config(cfg))
     print(f"Wrote {len(records)} observations to {args.out}.allele_counts.tsv")
@@ -286,7 +300,7 @@ def cmd_run(args) -> int:
         min_count_depth=args.min_count_depth, alpha=args.alpha,
         de_alpha=args.de_alpha,
         min_effect_log2=args.min_effect_log2, min_plants=args.min_plants,
-        flower_norm=args.flower_norm,
+        flower_norm=args.flower_norm, counter=args.counter,
         samtools=args.samtools, verbose=args.verbose)
     return 0
 

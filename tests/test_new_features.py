@@ -8,6 +8,7 @@ These cover everything that does NOT need samtools/BAMs:
   * Task 2  parental-DE statistics + cis/trans DE-concordance sanity check
   * Task 4  label round-trip through the TSV read/write layer
 """
+import math
 import os
 import sys
 import tempfile
@@ -15,7 +16,7 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from asertain.labels import Labels, parse_comment
-from asertain import tables, testing, contrast, expression
+from asertain import tables, testing, contrast, expression, haplotype
 
 
 # ---------------------------------------------------------------------------
@@ -115,22 +116,49 @@ def test_snp_gene_summary_collapses_plants_and_flowers():
 
 def test_parental_de_direction_and_columns():
     # g1: variable parents much higher than fixed.  g2: roughly equal.
+    # Two genotypes per lineage (so a valid across-genotype test exists).
     counts = {
-        "g1": {"v1": 1000, "v2": 1100, "f1": 100, "f2": 90},
-        "g2": {"v1": 200, "v2": 210, "f1": 195, "f2": 205},
+        "g1": {"v1a": 1000, "v2a": 1100, "f1a": 100, "f2a": 90},
+        "g2": {"v1a": 200, "v2a": 210, "f1a": 195, "f2a": 205},
     }
-    lineage = {"v1": "variable", "v2": "variable", "f1": "fixed", "f2": "fixed"}
+    lineage = {"v1a": "variable", "v2a": "variable", "f1a": "fixed", "f2a": "fixed"}
+    geno = {"v1a": "V1", "v2a": "V2", "f1a": "F1", "f2a": "F2"}   # 4 genotypes
     names = {"g1": "g1", "g2": "g2"}
-    # Equal library sizes -> library-size normalisation is identity, so the
-    # fold change reflects the raw biology (robust for a tiny gene panel).
-    libs = {"v1": 1_000_000, "v2": 1_000_000, "f1": 1_000_000, "f2": 1_000_000}
-    de = expression.differential_expression(counts, lineage, names, library_sizes=libs)
+    libs = {s: 1_000_000 for s in lineage}
+    de = expression.differential_expression(counts, lineage, names,
+                                            library_sizes=libs, sample_genotype=geno)
     by_gene = {r["gene_id"]: r for r in de}
     assert by_gene["g1"]["log2FoldChange"] > 1.5
     assert by_gene["g1"]["higher_in"] == "variable"
     assert by_gene["g1"]["pvalue"] != "NA"
+    assert by_gene["g1"]["method"] == "welch_genotype"
+    assert by_gene["g1"]["n_variable"] == 2 and by_gene["g1"]["n_fixed"] == 2
     assert abs(by_gene["g2"]["log2FoldChange"]) < 0.3
     assert set(expression.DE_COLS).issuperset(by_gene["g1"].keys())
+
+
+def test_parental_de_unequal_flower_counts_do_not_bias_fc():
+    # Variable lineage: k2 (4 flowers) + k3 (3 flowers). Fixed: amph (6 flowers).
+    # Each genotype's flowers carry the SAME per-genotype level, so collapsing to
+    # genotype means must give exactly the genotype-level fold change regardless
+    # of how many flowers each genotype has.
+    counts = {"g": {}}
+    lineage, geno, libs = {}, {}, {}
+    def add(sample, gt, lin, level):
+        counts["g"][sample] = level
+        lineage[sample] = lin; geno[sample] = gt; libs[sample] = 1_000_000
+    for i in range(4): add(f"k2_{i}", "k2", "variable", 300)   # k2 level 300
+    for i in range(3): add(f"k3_{i}", "k3", "variable", 100)   # k3 level 100
+    for i in range(6): add(f"a_{i}", "amph", "fixed", 50)      # amph level 50
+    de = expression.differential_expression(counts, lineage, {"g": "g"},
+                                            library_sizes=libs, sample_genotype=geno)[0]
+    # Genotype means: variable = mean(300,100)=200, fixed = 50.
+    # log2((200+1)/(50+1)) ~ log2(3.94) ~ 1.98 -- NOT pulled by amph's 6 flowers.
+    assert abs(de["log2FoldChange"] - math.log2(201/51)) < 1e-3   # value is 4-dp rounded
+    assert de["n_variable"] == 2 and de["n_fixed"] == 1
+    assert de["n_variable_flowers"] == 7 and de["n_fixed_flowers"] == 6
+    # Fixed has 1 genotype -> no valid across-genotype test -> flagged fallback.
+    assert de["method"] == "welch_flower_pseudorep"
 
 
 def test_parental_de_library_size_correction():
@@ -234,6 +262,124 @@ def test_external_table_without_header_untouched():
         fh.write("g1\t2.0\t0.01\n")
     rows = tables.read_table(path)
     assert rows[0]["gene_id"] == "g1" and rows[0]["log2FoldChange"] == "2.0"
+
+
+# ---------------------------------------------------------------------------
+# Read-backed haplotype counting (CIGAR walk + fragment assignment)
+# ---------------------------------------------------------------------------
+
+def test_read_bases_at_simple_match():
+    # 10M read starting at ref 100 -> covers 100..109. Base at 105 is seq[5].
+    seq = "ACGTACGTAC"
+    out = haplotype.read_bases_at(100, "10M", seq, "I" * 10, [100, 105, 109, 200])
+    assert out[100][0] == "A"
+    assert out[105][0] == "C"   # seq[5]
+    assert out[109][0] == "C"   # seq[9]
+    assert 200 not in out       # not covered
+
+
+def test_read_bases_at_with_intron_and_indel():
+    # 5M 100N 5M: covers ref 100..104 and 205..209 (intron skips 105..204).
+    seq = "AAAAACCCCC"
+    out = haplotype.read_bases_at(100, "5M100N5M", seq, "I" * 10, [102, 150, 205])
+    assert out[102][0] == "A"
+    assert 150 not in out                 # falls in the intron (N) -> absent
+    assert out[205][0] == "C"             # seq[5], first base after the skip
+    # Soft clip consumes query but not ref: 3S7M at ref 100 -> ref 100 = seq[3].
+    out2 = haplotype.read_bases_at(100, "3S7M", "TTTACGTAC", "I" * 9, [100])
+    assert out2[100][0] == "A"            # seq[3], past the 3 soft-clipped bases
+
+
+def test_fragment_assignment_logic(tmp_path=None):
+    import subprocess, tempfile, os, shutil
+    if shutil.which("samtools") is None:
+        print("    (skipped: samtools not on PATH)")
+        return
+    d = tempfile.mkdtemp()
+    sam = os.path.join(d, "x.sam")
+    # SNP at pos 105 (var=A, fix=G) and pos 115 (var=A, fix=G).
+    # frag1: both mates/reads variable -> 1 variable. frag2: fixed at both -> fixed.
+    # frag3: variable at 105 but fixed at 115 -> ambiguous (excluded).
+    # frag4: single read, variable at 105 only -> variable.
+    with open(sam, "w") as fh:
+        fh.write("@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:300\n")
+        def rd(q, pos, seq):
+            fh.write(f"{q}\t0\tchr1\t{pos}\t60\t{len(seq)}M\t*\t0\t0\t{seq}\t{'I'*len(seq)}\n")
+        # read spanning 100..119 (20M); index of 105 = 5, 115 = 15.
+        rd("frag1", 100, "AAAAA" + "A" + "AAAAAAAAA" + "A" + "AAAA")  # A at 105 and 115
+        rd("frag2", 100, "GGGGG" + "G" + "GGGGGGGGG" + "G" + "GGGG")  # G at 105 and 115
+        rd("frag3", 100, "AAAAA" + "A" + "AAAAAAAAA" + "G" + "AAAA")  # A@105, G@115
+        rd("frag4", 100, "AAAAA" + "A" + "AAAA")                       # covers 100..109, A@105
+    bam = os.path.join(d, "x.bam")
+    subprocess.run(f"samtools view -bS {sam} | samtools sort -o {bam} -",
+                   shell=True, check=True)
+    subprocess.run(["samtools", "index", bam], check=True)
+    snps = [(105, "A", "G"), (115, "A", "G")]
+    var, fix, amb, n = haplotype.count_gene_haplotypes(
+        bam, "chr1", 105, 115, snps, min_mapq=20, min_baseq=20)
+    assert var == 2          # frag1 + frag4
+    assert fix == 1          # frag2
+    assert amb == 1          # frag3 (both haplotypes)
+    assert n == 4
+
+
+def test_haplotype_counts_each_read_once_endtoend():
+    """A fragment spanning 3 SNPs must be counted once, not 3x; the per-plant
+    test is then a binomial over independent reads, and n_snps reports the real
+    phased-SNP count."""
+    import subprocess, tempfile, os, shutil
+    if shutil.which("samtools") is None:
+        print("    (skipped: samtools not on PATH)")
+        return
+    from asertain.config import CrossConfig, Parent, Flower, Reference, F1Plant
+    from asertain.genotypes import InformativeSNP, PlantAllele
+    d = tempfile.mkdtemp()
+
+    def make_bam(name, n_var, n_fix):
+        sam = os.path.join(d, name + ".sam")
+        with open(sam, "w") as fh:
+            fh.write("@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:chr1\tLN:300\n")
+            rid = 0
+            for hap, n in [("A", n_var), ("G", n_fix)]:
+                for _ in range(n):
+                    s = list("A" * 30)
+                    for off in (5, 15, 25):       # SNPs at 105/115/125
+                        s[off] = hap
+                    fh.write(f"r{name}_{rid}\t0\tchr1\t100\t60\t30M\t*\t0\t0\t"
+                             f"{''.join(s)}\t{'I'*30}\n"); rid += 1
+        bam = os.path.join(d, name + ".bam")
+        subprocess.run(f"samtools view -bS {sam} | samtools sort -o {bam} -",
+                       shell=True, check=True)
+        subprocess.run(["samtools", "index", bam], check=True)
+        return bam
+
+    bams = {n: make_bam(n, v, f) for n, v, f in
+            [("p1f1", 80, 20), ("p1f2", 78, 22), ("p2f1", 82, 18), ("p2f2", 79, 21)]}
+    parents = [Parent("V", "V", "variable"), Parent("F", "F", "fixed")]
+    plants = [
+        F1Plant("P1", "V", "F", [Flower("p1f1", bams["p1f1"]), Flower("p1f2", bams["p1f2"])],
+                vcf_sample="P1", background="bgV"),
+        F1Plant("P2", "V", "F", [Flower("p2f1", bams["p2f1"]), Flower("p2f2", bams["p2f2"])],
+                vcf_sample="P2", background="bgF"),
+    ]
+    cfg = CrossConfig("t", Reference(None, "unknown"), "v", "f", parents, plants)
+
+    def snp(pos):
+        pa = {pl.name: PlantAllele("A", "G", "both_hom") for pl in plants}
+        return InformativeSNP("chr1", pos, "A", "G", 100.0, pa, "shared",
+                              ["bgV", "bgF"], gene_id="G1", gene_name="G1", location="genic")
+    recs = haplotype.count_flowers_haplotype(cfg, [snp(105), snp(115), snp(125)],
+                                             min_depth=10, progress=False)
+    assert len(recs) == 4
+    # Each fragment spans all 3 SNPs but is counted ONCE: ~80 variable, not 240.
+    by_fl = {r["flower"]: r for r in recs}
+    assert by_fl["p1f1"]["variable_count"] == 80 and by_fl["p1f1"]["fixed_count"] == 20
+    assert by_fl["p1f1"]["n_hap_snps"] == 3
+    genes = testing.test_genes(recs, alpha=0.05)
+    g = genes[0]
+    assert g["n_snps"] == 3                 # real phased-SNP count, not the pseudo-SNP
+    assert g["method"] == "binomial"        # one independent (K,N) per plant
+    assert g["ase_call"] is True and g["direction"] == "variable"
 
 
 def _run_all():

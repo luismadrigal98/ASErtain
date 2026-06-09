@@ -215,10 +215,16 @@ def test_genes(count_records: List[Dict], *,
         fixed_seen = f_tot > 0
         possible_ref_bias = bool(ref_is_variable and not fixed_seen)
 
+        # In read-backed (haplotype) mode each gene is one pseudo-SNP record, so
+        # report the real number of SNPs phased into the reads instead.
+        hap_counts = [r["n_hap_snps"] for r in recs
+                      if r.get("n_hap_snps") not in (None, "")]
+        n_snps = max(hap_counts) if hap_counts else len({r["snp_id"] for r in recs})
+
         results.append({
             "gene_id": gene_id,
             "gene_name": recs[0].get("gene_name", gene_id),
-            "n_snps": len({r["snp_id"] for r in recs}),
+            "n_snps": n_snps,
             "n_plants": len(plant_res),
             "n_backgrounds": n_backgrounds,
             "n_flowers": len({r["flower"] for r in recs}),

@@ -5,25 +5,33 @@ and to *sanity-check* ASE candidates you also need the parental expression
 difference (variable lineage vs fixed lineage). This module computes that from
 the parental RNA-seq libraries, pure-Python (numpy/scipy + samtools):
 
-    1. count reads per gene per parental library      (`count_parental_expression`)
-    2. library-size normalise (DESeq median-of-ratios) (`size_factors`)
-    3. per-gene test variable vs fixed                 (`differential_expression`)
+    1. count reads per gene per parental flower        (`count_parental_expression`)
+    2. depth-normalise each flower by library size     (idxstats total reads)
+    3. collapse flowers -> genotype (biological unit), then test variable vs fixed
+                                                       (`differential_expression`)
 
 The output is oriented variable/fixed (a positive log2 fold change = higher in
 the variable lineage) and column-named so it drops straight into
 `asertain contrast` (`log2FoldChange`, `padj`).
 
-Honesty, by design. Two limitations are surfaced, never hidden:
+Nested replication is respected, mirroring the ASE side. Flowers are technical
+sub-samples of a *genotype* (the biological replicate), just as F1 flowers nest
+in an F1 plant. So depth-normalised flowers are averaged within genotype before
+testing: each genotype gets equal weight regardless of its flower count (so a
+parent with 6 flowers does not outvote two parents with 3 + 4), and the test is
+across genotypes rather than across pseudoreplicated flowers.
+
+Honesty, by design. Limitations are surfaced, never hidden:
 
 * **Gene-region counts, not exon-union.** `samtools view -c` over the gene
   interval is a proxy for a featureCounts/HTSeq exon-union count; it includes
   intronic overlap. Fine for a direction/magnitude sanity check; for a
   publication DE table, run DESeq2/edgeR and pass it to `contrast` directly.
-* **Pseudoreplication.** If a lineage is represented by a single genotype
-  (e.g. one fixed-lineage parent sampled as several flowers), the flowers are
-  technical — not biological — replicates, so the p-value is anticonservative.
-  We warn loudly and report `n_genotypes_*`; trust the *direction* more than the
-  p-value in that case.
+* **Pseudoreplication.** A valid across-genotype test needs >= 2 genotypes per
+  lineage. If a lineage has only one genotype (e.g. one fixed parent sampled as
+  several flowers), the test falls back to flower level
+  (`method = welch_flower_pseudorep`) and the p-value is anticonservative — trust
+  the fold-change *direction*, or supply a replicated external DE table.
 """
 from __future__ import annotations
 

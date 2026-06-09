@@ -94,7 +94,6 @@ class GeneIndex:
                 break
         return hit
 
-
 def _parse_attrs(field: str, is_gff3: bool) -> Dict[str, str]:
     out: Dict[str, str] = {}
     if is_gff3:

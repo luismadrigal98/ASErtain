@@ -106,6 +106,23 @@ def samtools_count(bam: str, region: str, *,
     return int(out) if out else 0
 
 
+def samtools_view(bam: str, region: str, *,
+                  min_mapq: int = 20,
+                  exclude_flags: int = 3844,
+                  samtools: str = "samtools") -> str:
+    """Return raw SAM alignment lines overlapping `region` (no header).
+
+    Used by the read-backed haplotype counter. `exclude_flags` defaults to 3844
+    = unmapped(0x4) + secondary(0x100) + qcfail(0x200) + duplicate(0x400) +
+    supplementary(0x800), so only primary, mapped, non-duplicate alignments are
+    returned and each fragment's two mates are the only repeats (deduplicated by
+    QNAME downstream).
+    """
+    cmd = [samtools, "view", "-q", str(min_mapq),
+           "-F", str(exclude_flags), bam, region]
+    return run(cmd).stdout
+
+
 def samtools_total_mapped(bam: str, samtools: str = "samtools") -> int:
     """Total mapped reads in a BAM via `idxstats` (one fast call).
 

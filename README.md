@@ -62,7 +62,7 @@ DESeq2/edgeR table with `--parental-de`.
 | Subcommand | Input | Output |
 |-----------|-------|--------|
 | `diagnose` | multi-sample VCF + config | `*.informative_snps.tsv`, `*.bed` |
-| `count`    | informative SNPs + F1 flower BAMs | `*.allele_counts.tsv` |
+| `count`    | informative SNPs + F1 flower BAMs | `*.allele_counts.tsv` (`--counter pileup`\|`haplotype`) |
 | `test`     | allele counts | `*.gene_ase.tsv` |
 | `parental-de` | config (parent RNA BAMs) + GTF | `*.parental_de.tsv` (variable vs fixed) |
 | `contrast` | gene ASE + parental DE | `*.cis_trans.tsv` (+ ASE-vs-DE sanity check) |
@@ -105,6 +105,13 @@ is rescaled so a deeply sequenced one cannot dominate its plant's ratio.
   named parents, so the method works even when parents are heterozygous/outbred.
   Phase is taken from the parents (genetic fact), not from F1 expression, so
   strong-ASE sites are retained rather than miscalled away.
+* **Read-backed counting (`--counter haplotype`)** — SNPs in one gene aren't
+  independent (a read spanning several is counted at each), which inflates the
+  per-plant depth. The haplotype counter assigns each *fragment* to a parental
+  haplotype across all the SNPs it covers and counts it **once** per gene, giving
+  one independent (K, N) per gene×plant and a clean binomial — no SNP
+  double-counting. Fragments carrying both alleles are flagged ambiguous; needs
+  no reference FASTA and works with `nmask`/`wasp` BAMs.
 * **Flag-driven reference-bias handling** — `none` / `report` / `null-shift` /
   `wasp` / `nmask`, plus `mask-reference` to build the N-masked reference / WASP
   inputs. Important when the reference is one parent (the other allele can be lost).
@@ -127,10 +134,11 @@ is rescaled so a deeply sequenced one cannot dominate its plant's ratio.
 
 ## Status
 
-Fully implemented and tested (synthetic + live BAMs): `diagnose`, `count`,
-`test` (with flower normalisation), `parental-de`, `mask-reference`, plus the
-CLI, config (new + legacy schema), the label-aware file-format layer, and the
-ASE-vs-DE sanity check in `contrast`. Working scaffolds to extend: `contrast`'s
+Fully implemented and tested (synthetic + live BAMs): `diagnose`, `count`
+(per-SNP pileup and read-backed haplotype counters), `test` (with flower
+normalisation), `parental-de`, `mask-reference`, plus the CLI, config (new +
+legacy schema), the label-aware file-format layer, and the ASE-vs-DE sanity
+check in `contrast`. Working scaffolds to extend: `contrast`'s
 formal *trans* significance test (the category logic and DE-concordance check
 are done), `report`, and the WASP remap chain in `external.py` (SNP-file
 generation done; the aligner step needs your alignment command).
@@ -148,7 +156,8 @@ src/asertain/
   config.py       cross-design config (roles, parents, F1 backgrounds)
   vcf.py          minimal VCF reader
   genotypes.py    per-parent genotyping + diagnostic-SNP logic
-  counting.py     mpileup allele counting + reference-bias modes
+  counting.py     mpileup per-SNP allele counting + reference-bias modes
+  haplotype.py    read-backed haplotype counting (--counter haplotype)
   stats.py        binomial / beta-binomial / BH / per-replicate logit tests
   testing.py      gene-level aggregation, flower normalisation, ASE calls
   expression.py   parental differential expression (variable vs fixed)

@@ -153,6 +153,7 @@ COUNT_COLS = [
     "variable_allele", "fixed_allele", "variable_is_ref", "tier",
     "variable_count", "fixed_count", "other_count", "total_depth",
     "null_p", "gene_id", "gene_name",
+    "n_hap_snps",      # read-backed counter only: #SNPs phased into this gene's reads
 ]
 
 
@@ -173,6 +174,8 @@ def read_allele_counts(path: str) -> List[Dict]:
                   "other_count", "total_depth"):
             row[c] = int(row[c])
         row["null_p"] = float(row["null_p"])
+        if row.get("n_hap_snps") not in (None, ""):   # read-backed counter only
+            row["n_hap_snps"] = int(row["n_hap_snps"])
     return rows
 
 
