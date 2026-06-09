@@ -73,12 +73,15 @@ asertain run --config "$CONFIG" \
     --vcf "$WORK/anthocyanin.vcf.gz" --out "$WORK/ase" \
     --bias-mode report \
     --min-parent-depth 10 --maf-threshold 0.10 \
-    --min-count-depth 10 --min-mapq 20 --min-baseq 20
+    --min-count-depth 10 --min-mapq 20 --min-baseq 20 \
+    --verbose                       # also write the per-SNP / per-plant audit tables
 
 echo
 echo "Done. Key outputs in $WORK/:"
 echo "  ase.informative_snps.tsv   phased informative SNPs per F1 genome"
-echo "  ase.allele_counts.tsv      per-flower allele counts (+ variable_is_ref)"
+echo "  ase.allele_counts.tsv      per-flower x SNP allele counts (+ variable_is_ref)"
+echo "  ase.snp_gene_counts.tsv    [verbose] per gene x SNP x plant counts (flowers summed)"
+echo "  ase.plant_gene_stats.tsv   [verbose] per gene x plant test (K,N,n_snps,rho,p) -> max-p"
 echo "  ase.gene_ase.tsv           per-gene ASE calls (check fixed_allele_seen!)"
 echo "  ase.report.html            summary"
 echo

@@ -66,6 +66,21 @@ asertain check    --config my_cross.yaml          # validate config + tools
 Designed for **outbred parents**, **nested replication** (RNA samples within
 individuals), and **RNA-seq-only** data.
 
+### Auditing intermediate results
+
+Add `--verbose` (to `test` or `run`) to write the full evidence trail so every
+gene call can be traced and explained:
+
+| File | Granularity |
+|------|-------------|
+| `*.allele_counts.tsv`     | per **flower × SNP** (raw counts, `variable_is_ref`, `tier`) |
+| `*.snp_gene_counts.tsv`   | per **gene × SNP × plant** (flowers summed, per-SNP ratio) |
+| `*.plant_gene_stats.tsv`  | per **gene × plant** (K, N, n_snps, ρ, method, p) → fed to max-p |
+| `*.gene_ase.tsv`          | per **gene** (the call) |
+
+Reading them bottom-up shows exactly how raw reads become a call: flower counts →
+per-SNP×plant → per-plant test → `max-p` across plants → gene.
+
 ## What makes the calls trustworthy
 
 * **Phased informative SNPs** — for each F1 individual, the maternal (variable)

@@ -71,6 +71,9 @@ def _add_test_opts(p: argparse.ArgumentParser) -> None:
     g.add_argument("--ref-is-variable", action="store_true",
                    help="Reference equals the variable lineage; flags genes whose "
                         "fixed allele is never seen as possible mapping artefacts")
+    g.add_argument("--verbose", action="store_true",
+                   help="Also write audit/intermediate tables: per gene×SNP×plant "
+                        "allele counts and per gene×plant test inputs/outputs")
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +165,24 @@ def cmd_test(args) -> int:
     n_ase = sum(1 for g in genes if g["ase_call"])
     print(f"Genes tested: {len(genes)}  |  ASE calls (q<{args.alpha}): {n_ase}")
     print(f"Wrote {args.out}.gene_ase.tsv")
+    if getattr(args, "verbose", False):
+        _write_verbose_tables(counts, args.out)
     return 0
+
+
+def _write_verbose_tables(counts, out_prefix: str) -> None:
+    """Write the audit/intermediate tables enabled by --verbose."""
+    from .tables import write_table
+    from .testing import (SNP_DETAIL_COLS, PLANT_DETAIL_COLS,
+                          snp_plant_detail, plant_gene_detail)
+    snp_rows = snp_plant_detail(counts)
+    plant_rows = plant_gene_detail(counts)
+    write_table(snp_rows, SNP_DETAIL_COLS, f"{out_prefix}.snp_gene_counts.tsv",
+                comment="ASErtain per gene×SNP×plant allele counts (flowers summed)")
+    write_table(plant_rows, PLANT_DETAIL_COLS, f"{out_prefix}.plant_gene_stats.tsv",
+                comment="ASErtain per gene×plant test inputs/outputs (feeds max-p)")
+    print(f"  [verbose] {out_prefix}.snp_gene_counts.tsv ({len(snp_rows)} rows)")
+    print(f"  [verbose] {out_prefix}.plant_gene_stats.tsv ({len(plant_rows)} rows)")
 
 
 def cmd_contrast(args) -> int:
@@ -203,7 +223,7 @@ def cmd_run(args) -> int:
         min_mapq=args.min_mapq, min_baseq=args.min_baseq,
         min_count_depth=args.min_count_depth, alpha=args.alpha,
         min_effect_log2=args.min_effect_log2, min_plants=args.min_plants,
-        samtools=args.samtools)
+        samtools=args.samtools, verbose=args.verbose)
     return 0
 
 

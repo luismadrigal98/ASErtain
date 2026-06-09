@@ -58,21 +58,26 @@ def _plant_snp_counts(records: List[Dict]) -> Dict[str, List[Tuple[int, int]]]:
 
 
 def _plant_test(pairs: List[Tuple[int, int]], null_p: float) -> Optional[Dict]:
-    """Per-plant test over its SNP (k, n) pairs. Returns p, log2, method, k, n."""
+    """Per-plant test over its SNP (k, n) pairs.
+
+    Returns p, log2, method, k, n, n_snps, rho (rho is None for the binomial).
+    """
     pairs = [(k, n) for k, n in pairs if n > 0]
     if not pairs:
         return None
     k_tot = sum(k for k, _ in pairs)
     n_tot = sum(n for _, n in pairs)
-    if len(pairs) >= MIN_SNPS_FOR_BETABINOM:
+    n_snps = len(pairs)
+    if n_snps >= MIN_SNPS_FOR_BETABINOM:
         bb = st.betabinom_test(pairs, null_p=null_p)
         if bb is not None and bb.converged:
-            return {"p": bb.p_value, "log2": bb.log2_ratio,
-                    "method": "betabinom", "k": k_tot, "n": n_tot}
+            return {"p": bb.p_value, "log2": bb.log2_ratio, "method": "betabinom",
+                    "k": k_tot, "n": n_tot, "n_snps": n_snps, "rho": bb.rho}
     ratio = cont_ratio(k_tot, n_tot)
     return {"p": st.binomial_p(k_tot, n_tot, null_p),
             "log2": math.log2(ratio / (1 - ratio)),
-            "method": "binomial", "k": k_tot, "n": n_tot}
+            "method": "binomial", "k": k_tot, "n": n_tot,
+            "n_snps": n_snps, "rho": None}
 
 
 def test_genes(count_records: List[Dict], *,
@@ -176,6 +181,104 @@ def test_genes(count_records: List[Dict], *,
         r.pop("_min_plants", None)
     results.sort(key=lambda r: r["p_primary"])
     return results
+
+
+# ---------------------------------------------------------------------------
+# Verbose audit tables (written when --verbose) — let you trace every number
+# from raw per-flower counts up to the gene-level call.
+# ---------------------------------------------------------------------------
+
+SNP_DETAIL_COLS = [
+    "gene_id", "gene_name", "chrom", "pos", "snp_id", "tier",
+    "plant", "background", "variable_allele", "fixed_allele", "variable_is_ref",
+    "n_flowers", "variable_count", "fixed_count", "other_count",
+    "allelic_depth", "variable_ratio", "null_p",
+]
+
+PLANT_DETAIL_COLS = [
+    "gene_id", "gene_name", "plant", "background", "n_snps",
+    "variable_reads", "fixed_reads", "allelic_depth",
+    "variable_ratio", "log2_ratio", "rho", "method", "p_plant", "null_p",
+]
+
+
+def snp_plant_detail(count_records: List[Dict]) -> List[Dict]:
+    """One row per (gene, SNP, plant): flowers summed, with the per-SNP ratio.
+
+    This is the fully expanded evidence table — every gene×SNP×plant combination
+    and its allele counts — for auditing exactly what drove each gene call.
+    """
+    by_gene: Dict[str, List[Dict]] = defaultdict(list)
+    for r in count_records:
+        if r.get("gene_id") in (None, "", "intergenic"):
+            continue
+        by_gene[r["gene_id"]].append(r)
+
+    rows: List[Dict] = []
+    for gene_id, recs in by_gene.items():
+        null_p = _gene_null(recs)
+        agg: Dict[Tuple[str, str], Dict] = {}
+        for r in recs:
+            key = (r["plant"], r["snp_id"])
+            a = agg.setdefault(key, {"v": 0, "f": 0, "o": 0, "flowers": set(), "meta": r})
+            a["v"] += r["variable_count"]
+            a["f"] += r["fixed_count"]
+            a["o"] += r["other_count"]
+            a["flowers"].add(r["flower"])
+        for (plant, snp_id), a in agg.items():
+            m = a["meta"]
+            depth = a["v"] + a["f"]
+            rows.append({
+                "gene_id": gene_id, "gene_name": m.get("gene_name", gene_id),
+                "chrom": m["chrom"], "pos": m["pos"], "snp_id": snp_id,
+                "tier": m.get("tier", ""), "plant": plant,
+                "background": m["background"],
+                "variable_allele": m["variable_allele"],
+                "fixed_allele": m["fixed_allele"],
+                "variable_is_ref": m["variable_is_ref"],
+                "n_flowers": len(a["flowers"]),
+                "variable_count": a["v"], "fixed_count": a["f"], "other_count": a["o"],
+                "allelic_depth": depth,
+                "variable_ratio": round(a["v"] / depth, 4) if depth else "NA",
+                "null_p": round(null_p, 4),
+            })
+    rows.sort(key=lambda r: (r["gene_id"], r["chrom"], r["pos"], r["plant"]))
+    return rows
+
+
+def plant_gene_detail(count_records: List[Dict]) -> List[Dict]:
+    """One row per (gene, plant): the exact input and output of each per-plant
+    test (K_P, N_P, n_snps, rho, method, p) that the max-p combine consumes."""
+    by_gene: Dict[str, List[Dict]] = defaultdict(list)
+    for r in count_records:
+        if r.get("gene_id") in (None, "", "intergenic"):
+            continue
+        by_gene[r["gene_id"]].append(r)
+
+    bg_of_plant = {r["plant"]: r["background"] for r in count_records}
+    name_of_gene = {r["gene_id"]: r.get("gene_name", r["gene_id"]) for r in count_records}
+
+    rows: List[Dict] = []
+    for gene_id, recs in by_gene.items():
+        null_p = _gene_null(recs)
+        for plant, pairs in _plant_snp_counts(recs).items():
+            res = _plant_test(pairs, null_p)
+            if res is None:
+                continue
+            k, n = res["k"], res["n"]
+            rows.append({
+                "gene_id": gene_id, "gene_name": name_of_gene.get(gene_id, gene_id),
+                "plant": plant, "background": bg_of_plant.get(plant, ""),
+                "n_snps": res["n_snps"],
+                "variable_reads": k, "fixed_reads": n - k, "allelic_depth": n,
+                "variable_ratio": round(k / n, 4) if n else "NA",
+                "log2_ratio": round(res["log2"], 4),
+                "rho": round(res["rho"], 4) if res["rho"] is not None else "NA",
+                "method": res["method"], "p_plant": res["p"],
+                "null_p": round(null_p, 4),
+            })
+    rows.sort(key=lambda r: (r["gene_id"], r["plant"]))
+    return rows
 
 
 def _phase_concordant(records: List[Dict], null_p: float) -> bool:

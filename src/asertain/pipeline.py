@@ -32,7 +32,8 @@ def run_pipeline(config: str, vcf: str, out_prefix: str, *,
                  alpha: float = 0.05,
                  min_effect_log2: float = 0.0,
                  min_plants: int = 2,
-                 samtools: str = "samtools") -> dict:
+                 samtools: str = "samtools",
+                 verbose: bool = False) -> dict:
     cfg = load_config(config)
     out_dir = os.path.dirname(out_prefix)
     if out_dir:
@@ -66,6 +67,18 @@ def run_pipeline(config: str, vcf: str, out_prefix: str, *,
                 comment="ASErtain gene-level ASE")
     n_ase = sum(1 for g in genes if g["ase_call"])
     print(f"      {len(genes)} genes tested, {n_ase} ASE calls (q<{alpha})")
+
+    if verbose:
+        snp_rows = testing.snp_plant_detail(counts)
+        plant_rows = testing.plant_gene_detail(counts)
+        write_table(snp_rows, testing.SNP_DETAIL_COLS,
+                    f"{out_prefix}.snp_gene_counts.tsv",
+                    comment="ASErtain per gene×SNP×plant allele counts (flowers summed)")
+        write_table(plant_rows, testing.PLANT_DETAIL_COLS,
+                    f"{out_prefix}.plant_gene_stats.tsv",
+                    comment="ASErtain per gene×plant test inputs/outputs (feeds max-p)")
+        print(f"      [verbose] {out_prefix}.snp_gene_counts.tsv ({len(snp_rows)} rows)")
+        print(f"      [verbose] {out_prefix}.plant_gene_stats.tsv ({len(plant_rows)} rows)")
 
     if parental_de:
         print("[4/5] contrast: cis/trans decomposition ...")

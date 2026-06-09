@@ -128,9 +128,36 @@ def replicate_logit_test(rep_counts: Sequence[Tuple[int, int]],
 # ---------------------------------------------------------------------------
 
 def _bb_params(mu: float, rho: float) -> Tuple[float, float]:
+    """Convert the interpretable (mean, overdispersion) to scipy's Beta (a, b).
+
+    The same Beta-binomial has three equivalent parametrisations; we interpret
+    and optimise in one and evaluate the likelihood in another:
+
+      (a, b)   native Beta SHAPE params that scipy.stats.betabinom needs.
+               Read as pseudo-counts: a = prior 'successes' (variable allele),
+               b = prior 'failures' (fixed allele); mean = a/(a+b).
+               Drawback: a and b are entangled — changing a moves the mean AND
+               the spread, which is bad for a test about the mean alone.
+
+      (mu, s)  mu = a/(a+b)  is the MEAN (the biology: variable-allele fraction).
+               s  = a + b    is the CONCENTRATION (total pseudo-count): large s
+               => tight spike at mu (little overdispersion; s->inf is the plain
+               binomial); small s => broad (much overdispersion). Inverting:
+                   a = mu * s,   b = (1 - mu) * s        <-- this function.
+
+      (mu, rho) rho = 1/(s+1) in (0,1) is the bounded OVERDISPERSION /
+               intra-class correlation (correlation of two reads from one SNP);
+               Var(p_s) = mu(1-mu)*rho. Hence  s = (1 - rho)/rho.
+
+    Why three: scipy needs (a, b); the hypothesis is about mu only, so we hold
+    mu fixed under H0 and let rho float (trivial in (mu, rho), awkward in (a, b))
+    — this orthogonalises the parameter of interest from the nuisance. The
+    optimiser works in logit(mu), logit(rho) (unconstrained reals), then maps
+    logit -> (mu, rho) -> s=(1-rho)/rho -> (a, b) here -> betabinom.logpmf.
+    """
     rho = min(max(rho, 1e-6), 1 - 1e-6)
-    s = (1 - rho) / rho
-    return mu * s, (1 - mu) * s
+    s = (1 - rho) / rho                # concentration a+b from overdispersion
+    return mu * s, (1 - mu) * s        # a = mu*s (successes), b = (1-mu)*s (failures)
 
 
 def _bb_nll(mu: float, rho: float, ks, ns) -> float:
