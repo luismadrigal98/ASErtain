@@ -38,6 +38,7 @@ def run_pipeline(config: str, vcf: str, out_prefix: str, *,
                  min_effect_log2: float = 0.0,
                  min_plants: int = 2,
                  flower_norm: str = "equalize",
+                 combine: str = "maxp",
                  counter: str = "pileup",
                  max_other_fraction: float = 0.10,
                  samtools: str = "samtools",
@@ -79,7 +80,7 @@ def run_pipeline(config: str, vcf: str, out_prefix: str, *,
     print("[3/5] test: nested (flower→plant) gene-level ASE ...")
     genes = testing.test_genes(
         counts, alpha=alpha, min_effect_log2=min_effect_log2,
-        min_plants=min_plants, flower_norm=flower_norm,
+        min_plants=min_plants, flower_norm=flower_norm, combine=combine,
         max_other_fraction=max_other_fraction,
         ref_lineage=cfg.reference_lineage())
     write_table(genes, GENE_COLS, f"{out_prefix}.gene_ase.tsv",

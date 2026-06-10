@@ -75,6 +75,14 @@ def _add_test_opts(p: argparse.ArgumentParser) -> None:
                    help="Min |log2 allelic ratio| to call ASE (default: 0)")
     g.add_argument("--min-plants", type=int, default=2,
                    help="Min F1 plants (biological replicates) for a call (default: 2)")
+    g.add_argument("--combine", default="maxp", choices=["maxp", "stouffer"],
+                   help="How to combine per-plant tests into a gene p-value. "
+                        "'maxp' (default): intersection–union — every plant must "
+                        "be individually significant (honest/conservative at n=2, "
+                        "but loses power as plants are added). 'stouffer': "
+                        "directional aggregate that gains power with more plants "
+                        "(still requires cross-background direction agreement); "
+                        "prefer it when scaling beyond ~3 F1 plants.")
     g.add_argument("--flower-norm", default="equalize",
                    choices=["equalize", "none"],
                    help="Normalise differential flower (technical-replicate) "
@@ -197,6 +205,7 @@ def cmd_test(args) -> int:
                        min_plants=args.min_plants,
                        ref_lineage=ref_lineage,
                        flower_norm=args.flower_norm,
+                       combine=args.combine,
                        max_other_fraction=args.max_other_fraction)
     write_table(genes, GENE_COLS, f"{args.out}.gene_ase.tsv",
                 comment="ASErtain gene-level ASE", labels=labels)
@@ -314,7 +323,7 @@ def cmd_run(args) -> int:
         min_count_depth=args.min_count_depth, alpha=args.alpha,
         de_alpha=args.de_alpha,
         min_effect_log2=args.min_effect_log2, min_plants=args.min_plants,
-        flower_norm=args.flower_norm, counter=args.counter,
+        flower_norm=args.flower_norm, combine=args.combine, counter=args.counter,
         max_other_fraction=args.max_other_fraction,
         samtools=args.samtools, verbose=args.verbose)
     return 0

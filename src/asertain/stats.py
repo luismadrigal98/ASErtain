@@ -72,6 +72,31 @@ def direction(ratio: float, null_p: float = 0.5, tol: float = 0.0) -> str:
     return "balanced"
 
 
+def stouffer_combine(items: Sequence[Tuple[float, str]]) -> float:
+    """Directional Stouffer combination of per-plant (two-sided p, direction).
+
+    `items` is one (p_value, direction) per F1 plant, direction in
+    {'variable','fixed','balanced'}. Each plant is converted to a signed z in its
+    own direction (variable = +, fixed = -, balanced = 0) and combined with EQUAL
+    weight (the plant is the unit of inference), giving a two-sided combined p.
+
+    This is the scalable alternative to the max-p intersection–union rule: max-p
+    requires EVERY plant to be individually significant (honest and conservative
+    at n=2, but its power falls as plants are added), whereas Stouffer tests for a
+    consistent aggregate shift and gains power with more replicates. ASErtain
+    still gates an ASE call on the cross-background consistency requirement, so a
+    Stouffer call additionally needs the plants to agree in direction. Use max-p
+    for the small-n consistency claim; Stouffer when scaling to several plants.
+    """
+    pairs = [(min(max(p, 1e-300), 1.0), d) for p, d in items]
+    if not pairs:
+        return 1.0
+    sign = {"variable": 1.0, "fixed": -1.0, "balanced": 0.0}
+    zs = [sign.get(d, 0.0) * float(stats.norm.isf(p / 2.0)) for p, d in pairs]
+    z = sum(zs) / math.sqrt(len(zs))
+    return float(2.0 * stats.norm.sf(abs(z)))
+
+
 def consistent_across(background_log2: Dict[str, float]) -> bool:
     """True if every background with a defined effect points the same way AND at
     least two backgrounds contribute (a single background cannot be 'consistent';

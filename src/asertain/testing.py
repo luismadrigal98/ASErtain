@@ -208,12 +208,15 @@ def test_genes(count_records: List[Dict], *,
                ref_is_variable: bool = False,
                ref_lineage: Optional[str] = None,
                flower_norm: str = "equalize",
+               combine: str = "maxp",
                max_other_fraction: float = MAX_OTHER_FRACTION) -> List[Dict]:
     # `ref_lineage` ('variable'/'fixed'/None) is the lineage the reference equals,
     # and drives the symmetric reference-bias flag. `ref_is_variable=True` is the
     # backward-compatible alias for ref_lineage='variable'.
     if ref_lineage is None and ref_is_variable:
         ref_lineage = "variable"
+    if combine not in ("maxp", "stouffer"):
+        raise ValueError(f"unknown combine rule '{combine}'; choose maxp|stouffer")
     by_gene: Dict[str, List[Dict]] = defaultdict(list)
     for r in count_records:
         if r.get("gene_id") in (None, "", "intergenic"):
@@ -245,8 +248,17 @@ def test_genes(count_records: List[Dict], *,
         bg_mean_log2 = {bg: sum(v) / len(v) for bg, v in bg_log2.items()}
 
         n_backgrounds = len(bg_mean_log2)
-        # Intersection–union: gene p = worst (max) per-plant p.
-        p_iut = max(r["p"] for r in plant_res.values())
+        # Combine the per-plant tests. Default 'maxp' = intersection–union: the
+        # gene p is the WORST (max) per-plant p, so every plant must be
+        # individually significant (honest/conservative at n=2). 'stouffer' is
+        # the scalable alternative: a directional aggregate that gains power as
+        # plants are added (still gated by cross-background consistency below).
+        p_maxp = max(r["p"] for r in plant_res.values())
+        if combine == "stouffer":
+            p_primary_val = st.stouffer_combine(
+                [(r["p"], plant_dir[p]) for p, r in plant_res.items()])
+        else:
+            p_primary_val = p_maxp
         methods = sorted({r["method"] for r in plant_res.values()})
 
         # Raw read totals (provenance — actual reads observed).
@@ -305,7 +317,7 @@ def test_genes(count_records: List[Dict], *,
             "mean_variable_ratio": round(mean_ratio, 4),
             "log2_ratio": round(log2_ratio, 4) if not math.isnan(log2_ratio) else "NA",
             "null_p": round(null_p, 4),
-            "p_primary": p_iut,
+            "p_primary": p_primary_val,
             "q_value": 1.0,
             "method": "+".join(methods),
             "per_plant_log2": ";".join(f"{p}={r['log2']:.3f}"
@@ -503,25 +515,32 @@ def plant_gene_detail(count_records: List[Dict], *,
     return rows
 
 
-def _phase_concordant(records: List[Dict], null_p: float) -> bool:
+def _phase_concordant(records: List[Dict]) -> bool:
     """Within each plant, do the gene's per-SNP imbalance directions agree?
 
     A `phased`-tier SNP whose parent was mis-called homozygous (parental ASE)
     can be summed in the wrong orientation; if a plant's SNPs disagree on
     direction the gene ratio is suspect. Returns True if every plant's SNPs are
     directionally concordant (ignoring near-balanced SNPs), else False.
+
+    Each SNP is judged against its OWN null (which differs across SNPs under a
+    per-SNP null-shift control), not a single gene-level null — otherwise SNPs
+    that are all consistently shifted relative to their individual nulls would
+    look discordant against an averaged null (audit C1 interaction).
     """
-    per_plant_snp: Dict[str, Dict[str, List[int]]] = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+    per_plant_snp: Dict[str, Dict[str, List[float]]] = defaultdict(
+        lambda: defaultdict(lambda: [0, 0, 0.5]))
     for r in records:
         slot = per_plant_snp[r["plant"]][r["snp_id"]]
         slot[0] += r["variable_count"]
         slot[1] += r["variable_count"] + r["fixed_count"]
+        slot[2] = r.get("null_p", 0.5)           # per-SNP null
     for snps in per_plant_snp.values():
         dirs = set()
-        for v, n in snps.values():
+        for v, n, snp_null in snps.values():
             if n < 1:
                 continue
-            d = st.direction(cont_ratio(v, n), null_p, tol=0.1)
+            d = st.direction(cont_ratio(int(v), int(n)), snp_null, tol=0.1)
             if d != "balanced":
                 dirs.add(d)
         if len(dirs) > 1:

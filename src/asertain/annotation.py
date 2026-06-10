@@ -79,20 +79,29 @@ class GeneIndex:
         return cls(dict(by_chrom))
 
     def annotate(self, chrom: str, pos: int, window: int = 0) -> Hit:
-        hit = Hit()
+        """Annotate a position, preferring a GENIC overlap over a window-only one.
+
+        In dense genomes a SNP can fall inside gene B while also lying in the
+        flanking `window` of a neighbouring gene A. Returning the first gene in
+        file order would mislabel such a SNP as A/upstream; we instead keep a
+        genic hit if any gene truly contains the position, and only fall back to
+        the nearest window (upstream/downstream) hit when no gene does."""
+        genic: Optional[Hit] = None
+        window_hit: Optional[Hit] = None
         for g in self._by_chrom.get(chrom, ()):
+            if g.start <= pos <= g.end:
+                genic = Hit(g.gene_id, g.gene_name, g.biotype, "genic")
+                break                            # a true overlap wins outright
+            if window <= 0 or window_hit is not None:
+                continue
             gs, ge = max(1, g.start - window), g.end + window
             if gs <= pos <= ge:
-                hit.gene_id, hit.gene_name, hit.biotype = (
-                    g.gene_id, g.gene_name, g.biotype)
-                if g.start <= pos <= g.end:
-                    hit.location = "genic"
-                elif g.strand == "+":
-                    hit.location = "upstream" if pos < g.start else "downstream"
+                if g.strand == "+":
+                    loc = "upstream" if pos < g.start else "downstream"
                 else:
-                    hit.location = "downstream" if pos < g.start else "upstream"
-                break
-        return hit
+                    loc = "downstream" if pos < g.start else "upstream"
+                window_hit = Hit(g.gene_id, g.gene_name, g.biotype, loc)
+        return genic or window_hit or Hit()
 
 def _parse_attrs(field: str, is_gff3: bool) -> Dict[str, str]:
     out: Dict[str, str] = {}

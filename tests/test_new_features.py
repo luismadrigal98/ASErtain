@@ -408,6 +408,136 @@ def test_ambiguous_fraction_flags_and_blocks_call():
     assert g3["low_ambiguity"] is True and g3["ase_call"] is True
 
 
+# ---------------------------------------------------------------------------
+# Audit fixes — robustness & extensibility
+# ---------------------------------------------------------------------------
+
+def _write_vcf(lines):
+    d = tempfile.mkdtemp()
+    path = os.path.join(d, "v.vcf")
+    with open(path, "w") as fh:
+        fh.write("##fileformat=VCFv4.2\n")
+        fh.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n")
+        for ln in lines:
+            fh.write(ln + "\n")
+    return path
+
+
+def test_qual_dot_is_not_dropped():
+    # QUAL='.' must pass the filter (missing != zero); a numeric QUAL below the
+    # threshold must still be dropped.
+    from asertain import vcf
+    path = _write_vcf([
+        "chr1\t100\t.\tA\tT\t.\tPASS\t.\tGT\t0/1",     # missing QUAL -> keep
+        "chr1\t200\t.\tA\tT\t5\tPASS\t.\tGT\t0/1",     # QUAL 5 -> drop at min 30
+        "chr1\t300\t.\tA\tT\t99\tPASS\t.\tGT\t0/1",    # QUAL 99 -> keep
+    ])
+    keep = list(vcf.iter_variants(path, min_qual=30.0))
+    positions = {v.pos for v in keep}
+    assert positions == {100, 300}
+    missing = next(v for v in keep if v.pos == 100)
+    assert missing.qual != missing.qual          # NaN preserved as "missing"
+
+
+def test_polyploid_and_haploid_gt_calls():
+    from asertain.vcf import _parse_gt, SampleCall
+    from asertain.genotypes import call_state, HOM_REF, HOM_ALT, HET, MISSING
+    assert _parse_gt("0/0/1/1") == ("0", "0", "1", "1")   # tetraploid het
+    assert _parse_gt("0") == ("0",)                        # haploid
+    assert _parse_gt("0/.") is None                        # half-missing
+    sc = lambda gt: SampleCall(gt, None, 50)
+    assert call_state(sc(_parse_gt("0/0/1")), min_depth=8, maf_threshold=0.1) == HET
+    assert call_state(sc(_parse_gt("1/1/1/1")), min_depth=8, maf_threshold=0.1) == HOM_ALT
+    assert call_state(sc(_parse_gt("0/0/0")), min_depth=8, maf_threshold=0.1) == HOM_REF
+    assert call_state(sc(None), min_depth=8, maf_threshold=0.1) == MISSING
+
+
+def test_reference_lineage_resolution():
+    from asertain.config import CrossConfig, Parent, F1Plant, Flower, Reference
+    parents = [Parent("k2", "k2", "variable"), Parent("amph", "amph", "fixed")]
+    pl = [F1Plant("P1", "k2", "amph", [Flower("f", "b")], vcf_sample="P1")]
+    cfg = CrossConfig("t", Reference("r.fa", "amph"), "kun", "amph", parents, pl)
+    assert cfg.reference_lineage() == "fixed"          # parent name -> its lineage
+    cfg.reference.identity = "variable"
+    assert cfg.reference_lineage() == "variable"
+    cfg.reference.identity = "third_species"
+    assert cfg.reference_lineage() is None             # no single-parent bias
+
+
+def test_possible_ref_bias_is_symmetric():
+    # Variable allele never seen (all reads fixed). Under a FIXED reference this
+    # is the suspect mapping artefact; under a VARIABLE reference it is not.
+    recs = [_rec(f"f{p}", p, "chr1:100", 0, 80, bg=b)
+            for p, b in [("P1", "b1"), ("P2", "b2")]]
+    g_fix = testing.test_genes(recs, ref_lineage="fixed")[0]
+    g_var = testing.test_genes(recs, ref_lineage="variable")[0]
+    assert g_fix["variable_allele_seen"] is False
+    assert g_fix["possible_ref_bias"] is True
+    assert g_var["possible_ref_bias"] is False
+
+
+def test_null_shift_heterogeneous_nulls_not_pooled():
+    # Each SNP sits exactly at its OWN (shifted) null -> no real ASE. The old
+    # pool-then-test-vs-averaged-null path could manufacture signal; the per-SNP
+    # shift test must report no imbalance.
+    def r(snp, v, f, null, p, bg):
+        d = _rec(f"fl{p}", p, snp, v, f, bg=bg, tier="phased")
+        d["null_p"] = null
+        return d
+    recs = []
+    for p, bg in [("P1", "b1"), ("P2", "b2")]:
+        recs += [r("chr1:100", 30, 70, 0.3, p, bg),
+                 r("chr1:200", 280, 120, 0.7, p, bg)]
+    g = testing.test_genes(recs, alpha=0.05)[0]
+    assert g["method"] in ("binom_shift", "betabinom_shift")
+    assert g["p_primary"] > 0.5 and g["ase_call"] is False
+    # A genuine shift relative to each SNP's null is detected and called.
+    recs2 = []
+    for p, bg in [("P1", "b1"), ("P2", "b2")]:
+        recs2 += [r("chr1:100", 45, 55, 0.3, p, bg),
+                  r("chr1:200", 340, 60, 0.7, p, bg)]
+    g2 = testing.test_genes(recs2, alpha=0.05)[0]
+    assert g2["p_primary"] < 1e-3 and g2["direction"] == "variable"
+    assert g2["phase_concordant"] is True and g2["ase_call"] is True
+
+
+def test_stouffer_combine_scales_power():
+    # Six plants all variable-biased, one weak/shallow. max-p is killed by the
+    # weak plant; Stouffer aggregates the consistent shift and calls.
+    recs = [_rec(f"fl{p}", p, "chr1:100", v, f, bg=b) for p, b, v, f in [
+        ("P1", "b1", 60, 40), ("P2", "b2", 58, 42), ("P3", "b3", 62, 38),
+        ("P4", "b4", 59, 41), ("P5", "b5", 61, 39), ("P6", "b6", 9, 6)]]
+    mp = testing.test_genes(recs, alpha=0.05, combine="maxp")[0]
+    so = testing.test_genes(recs, alpha=0.05, combine="stouffer")[0]
+    assert mp["ase_call"] is False
+    assert so["p_primary"] < mp["p_primary"] and so["ase_call"] is True
+
+
+def test_annotation_prefers_genic_over_window():
+    from asertain.annotation import GeneIndex, Gene
+    # geneA at 1000-2000 (listed first), geneB at 2100-3000. A SNP at 2150 is
+    # genic in B but within A's downstream 500-window. Must annotate as B/genic.
+    idx = GeneIndex({"chr1": [
+        Gene("A", "A", "protein", 1000, 2000, "+"),
+        Gene("B", "B", "protein", 2100, 3000, "+")]})
+    hit = idx.annotate("chr1", 2150, window=500)
+    assert hit.gene_id == "B" and hit.location == "genic"
+    # A SNP at 2050 is in no gene but in A's downstream window -> A/downstream.
+    hit2 = idx.annotate("chr1", 2050, window=500)
+    assert hit2.gene_id == "A" and hit2.location == "downstream"
+
+
+def test_mpileup_uses_uncapped_depth_and_matched_flags():
+    from asertain import external
+    # The pileup command must disable the depth cap (-d 0) and use the same read
+    # exclusion mask as the haplotype counter's samtools_view, so both counters
+    # see the same reads.
+    assert external._COUNT_EXCLUDE_FLAGS == 3844
+    import inspect
+    src = inspect.getsource(external.samtools_mpileup)
+    assert '"-d"' in src and "_COUNT_EXCLUDE_FLAGS" in src and '"--ff"' in src
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]
