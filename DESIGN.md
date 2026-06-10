@@ -119,12 +119,22 @@ plant share a genome, so they are **not** independent biological replicates.
   that plant's informative SNPs when it has ≥3 (the overdispersion absorbs
   SNP/mapping noise), otherwise a pooled binomial. A multi-start optimiser and a
   convergence gate keep the fit stable; non-converged fits fall back to binomial.
-* **Combine by intersection–union (max-p)** — the gene's p-value is the *largest*
-  per-plant p, so a call requires *every* contributing plant to be individually
-  significant in the same direction. This is valid and conservative at small n
-  (it needs no across-plant variance estimate — a beta-binomial *across* only 2
-  plants is unidentifiable), and it bakes the cross-background consistency in
-  rather than treating it as a footnote.
+* **Combine by intersection–union (max-p, default)** — the gene's p-value is the
+  *largest* per-plant p, so a call requires *every* contributing plant to be
+  individually significant in the same direction. This is valid and conservative
+  at small n (it needs no across-plant variance estimate — a beta-binomial
+  *across* only 2 plants is unidentifiable), and it bakes the cross-background
+  consistency in rather than treating it as a footnote. Its power, however,
+  *falls* as plants are added (one weak plant vetoes the gene), so for larger
+  designs `--combine stouffer` switches to a directional, equal-weight Stouffer
+  combination that gains power with replicate count while still requiring
+  cross-background direction agreement. Use max-p for the small-n consistency
+  claim, Stouffer when scaling beyond ~3 F1 plants.
+
+* **Heterogeneous per-SNP nulls** (only under `--bias-mode null-shift`, where each
+  SNP carries its own control bias) are never pooled into one ratio: the per-plant
+  test then fits a single logit *shift* with each SNP centred on its own null, so
+  real imbalance is not confused with differences between the nulls themselves.
 * **Consistency** — `consistent_backgrounds` requires ≥2 backgrounds present and
   one shared direction; a gene resolved in a single background cannot pass.
 * **Honesty flags** — `phase_concordant` (per-SNP directions agree within each

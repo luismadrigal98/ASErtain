@@ -536,6 +536,7 @@ def test_mpileup_uses_uncapped_depth_and_matched_flags():
     import inspect
     src = inspect.getsource(external.samtools_mpileup)
     assert '"-d"' in src and "_COUNT_EXCLUDE_FLAGS" in src and '"--ff"' in src
+    assert '"-B"' in src                          # BAQ disabled for ASE counting
 
 
 def _run_all():

@@ -91,11 +91,18 @@ def samtools_mpileup(bam: str, region: str, *,
     not allele-randomised — so it can bias the allelic ratio at exactly the
     highest-expression genes. We disable it by default for unbiased counting;
     pass a positive value to re-impose a cap.
+
+    BAQ (`-B` disables it) is intentionally OFF: with a reference, samtools
+    recomputes base qualities (BAQ) by default, which downweights bases near
+    indels asymmetrically and can drop legitimate alt-allele reads — a known
+    reference-bias confounder for allele-specific counting. Standard ASE counters
+    (GATK ASEReadCounter, phASER) likewise disable it.
     """
     cmd = [samtools, "mpileup", "-r", region,
            "-q", str(min_mapq), "-Q", str(min_baseq),
            "-d", str(max_depth),
            "--ff", str(_COUNT_EXCLUDE_FLAGS),
+           "-B",                          # disable BAQ
            "--no-output-ins", "--no-output-del"]
     if reference:
         cmd += ["-f", reference]
