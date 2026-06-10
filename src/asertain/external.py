@@ -71,13 +71,31 @@ def run(cmd: Sequence[str], *, capture: bool = True,
 # samtools
 # ---------------------------------------------------------------------------
 
+# Read flags excluded by both counters, so --counter pileup and --counter
+# haplotype see the SAME reads. 3844 = UNMAP(0x4) + SECONDARY(0x100) +
+# QCFAIL(0x200) + DUPLICATE(0x400) + SUPPLEMENTARY(0x800). samtools mpileup's
+# own default --ff omits SUPPLEMENTARY, so we set it explicitly to match
+# samtools_view's -F 3844.
+_COUNT_EXCLUDE_FLAGS = 3844
+
+
 def samtools_mpileup(bam: str, region: str, *,
                      min_mapq: int, min_baseq: int,
                      reference: Optional[str] = None,
+                     max_depth: int = 0,
                      samtools: str = "samtools") -> str:
-    """Return the raw mpileup stdout for a single region (e.g. 'chr1:100-100')."""
+    """Return the raw mpileup stdout for a single region (e.g. 'chr1:100-100').
+
+    `max_depth=0` disables samtools' per-file depth cap. The samtools default
+    (8000) silently downsamples deep loci — and the downsampling is positional,
+    not allele-randomised — so it can bias the allelic ratio at exactly the
+    highest-expression genes. We disable it by default for unbiased counting;
+    pass a positive value to re-impose a cap.
+    """
     cmd = [samtools, "mpileup", "-r", region,
            "-q", str(min_mapq), "-Q", str(min_baseq),
+           "-d", str(max_depth),
+           "--ff", str(_COUNT_EXCLUDE_FLAGS),
            "--no-output-ins", "--no-output-del"]
     if reference:
         cmd += ["-f", reference]
@@ -108,7 +126,7 @@ def samtools_count(bam: str, region: str, *,
 
 def samtools_view(bam: str, region: str, *,
                   min_mapq: int = 20,
-                  exclude_flags: int = 3844,
+                  exclude_flags: int = _COUNT_EXCLUDE_FLAGS,
                   samtools: str = "samtools") -> str:
     """Return raw SAM alignment lines overlapping `region` (no header).
 

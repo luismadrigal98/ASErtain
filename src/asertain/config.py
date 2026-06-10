@@ -85,6 +85,24 @@ class CrossConfig:
     gtf: Optional[str] = None
     annotation_window: int = 500
 
+    # -- reference identity -> lineage ------------------------------------
+    def reference_lineage(self) -> Optional[str]:
+        """Resolve `reference.identity` to a lineage role ('variable'/'fixed').
+
+        Drives the reference-mapping-bias flag in the test stage. `identity` may
+        be the literal role ('variable'/'fixed'), a specific parent name (whose
+        lineage is then looked up), or something with no lineage
+        ('third_species'/'unknown') -> None (no single-parent reference bias to
+        flag). This makes the bias flag work for EITHER reference parent, not
+        only when the reference is the variable lineage."""
+        ident = self.reference.identity
+        if ident in (VARIABLE, FIXED):
+            return ident
+        for p in self.parents:                   # identity given as a parent name
+            if p.name == ident:
+                return p.lineage
+        return None
+
     # -- parent lookups ----------------------------------------------------
     def parent(self, name: str) -> Parent:
         for p in self.parents:

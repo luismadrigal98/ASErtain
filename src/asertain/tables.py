@@ -104,8 +104,9 @@ def write_informative_snps(snps: List[InformativeSNP], path: str,
         w = csv.writer(fh, delimiter="\t")
         w.writerow(_SNP_COLS)
         for s in snps:
+            qual_str = "NA" if s.qual != s.qual else f"{s.qual:.2f}"  # NaN -> NA
             w.writerow([
-                s.chrom, s.pos, s.ref, s.alt, f"{s.qual:.2f}",
+                s.chrom, s.pos, s.ref, s.alt, qual_str,
                 s.classification, len(s.per_plant), ",".join(s.backgrounds),
                 _encode_per_plant(s.per_plant),
                 s.gene_id, s.gene_name, s.location,
@@ -125,7 +126,8 @@ def read_informative_snps(path: str) -> List[InformativeSNP]:
             row = dict(zip(header, line.rstrip("\n").split("\t")))
             out.append(InformativeSNP(
                 chrom=row["chrom"], pos=int(row["pos"]),
-                ref=row["ref"], alt=row["alt"], qual=float(row["qual"]),
+                ref=row["ref"], alt=row["alt"],
+                qual=float("nan") if row["qual"] in ("NA", "") else float(row["qual"]),
                 per_plant=_decode_per_plant(row["per_plant"]),
                 classification=row["classification"],
                 backgrounds=row["backgrounds"].split(",") if row["backgrounds"] else [],
@@ -141,7 +143,8 @@ def write_bed(snps: List[InformativeSNP], path: str) -> None:
         fh.write("# chrom\tstart\tend\tname\tscore\tstrand\n")
         for s in snps:
             name = f"{s.chrom}:{s.pos}_{s.classification}"
-            fh.write(f"{s.chrom}\t{s.pos - 1}\t{s.pos}\t{name}\t{s.qual:.0f}\t.\n")
+            score = "0" if s.qual != s.qual else f"{s.qual:.0f}"  # NaN -> 0 (BED score)
+            fh.write(f"{s.chrom}\t{s.pos - 1}\t{s.pos}\t{name}\t{score}\t.\n")
 
 
 # ---------------------------------------------------------------------------

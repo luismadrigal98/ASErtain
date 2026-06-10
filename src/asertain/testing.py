@@ -43,6 +43,7 @@ GENE_COLS = [
     "per_plant_log2", "per_plant_p", "direction",
     "consistent_backgrounds", "phase_concordant",
     "ambiguous_fraction", "low_ambiguity",
+    "variable_allele_seen", "n_plants_variable_seen",
     "fixed_allele_seen", "n_plants_fixed_seen", "possible_ref_bias",
     "n_both_hom_snps", "ase_call",
 ]
@@ -119,43 +120,83 @@ def flower_size_factors(records: List[Dict], *,
 
 def _plant_snp_counts(records: List[Dict],
                       size_factors: Optional[Dict[Tuple[str, str], float]] = None,
-                      ) -> Dict[str, List[Tuple[int, int]]]:
-    """plant -> list of (variable, total) per SNP, summing size-factor-rescaled
-    flowers within the plant. With `size_factors=None` (or empty) this is the
-    plain raw sum."""
+                      *, with_null: bool = False):
+    """plant -> per-SNP allele counts, summing size-factor-rescaled flowers.
+
+    With `size_factors=None` (or empty) this is the plain raw sum. By default
+    each SNP is a (variable, total) pair. With `with_null=True` it is a
+    (variable, total, null_p) triple — the per-SNP null expectation, needed to
+    test SNPs against their OWN nulls when those differ across a gene (audit C1,
+    --bias-mode null-shift). The null is constant for a (plant, SNP) across its
+    flowers, so the first record's value is used.
+
+    The flower size factor only ever *reduces or preserves* a plant's pooled
+    total N: by AM>=GM, sum_f(depth_f / w_f) = F * geomean(depths) <= sum_f
+    depth_f. So equalising flower weight cannot inflate the per-plant N above the
+    reads actually observed (it reweights each flower's ratio, not the test's
+    total confidence)."""
     sf = size_factors or {}
     per: Dict[str, Dict[str, List[float]]] = defaultdict(
         lambda: defaultdict(lambda: [0.0, 0.0]))
+    null_of: Dict[Tuple[str, str], float] = {}
     for r in records:
         w = sf.get((r["plant"], r["flower"]), 1.0) or 1.0
         slot = per[r["plant"]][r["snp_id"]]
         slot[0] += r["variable_count"] / w
         slot[1] += (r["variable_count"] + r["fixed_count"]) / w
+        null_of.setdefault((r["plant"], r["snp_id"]), r.get("null_p", 0.5))
     # Round the rescaled effective counts back to integers for the
     # binomial / beta-binomial likelihoods. Rounding is monotone so v<=n holds.
-    return {p: [(int(round(v)), int(round(n))) for v, n in snps.values()]
+    if not with_null:
+        return {p: [(int(round(v)), int(round(n))) for v, n in snps.values()]
+                for p, snps in per.items()}
+    return {p: [(int(round(v)), int(round(n)), null_of[(p, sid)])
+                for sid, (v, n) in snps.items()]
             for p, snps in per.items()}
 
 
-def _plant_test(pairs: List[Tuple[int, int]], null_p: float) -> Optional[Dict]:
-    """Per-plant test over its SNP (k, n) pairs.
+def _plant_test(triples: List[Tuple[int, int, float]]) -> Optional[Dict]:
+    """Per-plant test over its SNP (k, n, null_p) triples.
 
-    Returns p, log2, method, k, n, n_snps, rho (rho is None for the binomial).
+    Returns p, log2, dir, method, k, n, n_snps, rho (rho is None for the
+    binomial). When the SNPs share a null (the usual case — null is 0.5 for every
+    mode except a per-SNP null-shift control), the counts are pooled and tested
+    against that common null with the validated beta-binomial / exact binomial.
+    When the nulls DIFFER across SNPs, pooling would be invalid (audit C1), so a
+    per-SNP-null logit-shift LRT is used instead (`stats.shift_test`).
     """
-    pairs = [(k, n) for k, n in pairs if n > 0]
-    if not pairs:
+    triples = [(k, n, p0) for k, n, p0 in triples if n > 0]
+    if not triples:
         return None
-    k_tot = sum(k for k, _ in pairs)
-    n_tot = sum(n for _, n in pairs)
-    n_snps = len(pairs)
+    k_tot = sum(k for k, _, _ in triples)
+    n_tot = sum(n for _, n, _ in triples)
+    n_snps = len(triples)
+    nulls = [p0 for _, _, p0 in triples]
+    homogeneous = (max(nulls) - min(nulls)) < 1e-9
+    common_null = nulls[0]
+
+    if not homogeneous:
+        # Heterogeneous per-SNP nulls: never pool. Fit one logit shift.
+        sh = st.shift_test(triples)
+        if sh is not None:
+            direction = ("variable" if sh.delta > 0
+                         else "fixed" if sh.delta < 0 else "balanced")
+            return {"p": sh.p_value, "log2": sh.log2_ratio, "dir": direction,
+                    "method": sh.method, "k": k_tot, "n": n_tot,
+                    "n_snps": n_snps, "rho": sh.rho}
+
+    pairs = [(k, n) for k, n, _ in triples]
     if n_snps >= MIN_SNPS_FOR_BETABINOM:
-        bb = st.betabinom_test(pairs, null_p=null_p)
+        bb = st.betabinom_test(pairs, null_p=common_null)
         if bb is not None and bb.converged:
-            return {"p": bb.p_value, "log2": bb.log2_ratio, "method": "betabinom",
-                    "k": k_tot, "n": n_tot, "n_snps": n_snps, "rho": bb.rho}
+            return {"p": bb.p_value, "log2": bb.log2_ratio,
+                    "dir": st.direction(bb.mu, common_null),
+                    "method": "betabinom", "k": k_tot, "n": n_tot,
+                    "n_snps": n_snps, "rho": bb.rho}
     ratio = cont_ratio(k_tot, n_tot)
-    return {"p": st.binomial_p(k_tot, n_tot, null_p),
+    return {"p": st.binomial_p(k_tot, n_tot, common_null),
             "log2": math.log2(ratio / (1 - ratio)),
+            "dir": st.direction(ratio, common_null),
             "method": "binomial", "k": k_tot, "n": n_tot,
             "n_snps": n_snps, "rho": None}
 
@@ -165,8 +206,14 @@ def test_genes(count_records: List[Dict], *,
                min_effect_log2: float = 0.0,
                min_plants: int = 2,
                ref_is_variable: bool = False,
+               ref_lineage: Optional[str] = None,
                flower_norm: str = "equalize",
                max_other_fraction: float = MAX_OTHER_FRACTION) -> List[Dict]:
+    # `ref_lineage` ('variable'/'fixed'/None) is the lineage the reference equals,
+    # and drives the symmetric reference-bias flag. `ref_is_variable=True` is the
+    # backward-compatible alias for ref_lineage='variable'.
+    if ref_lineage is None and ref_is_variable:
+        ref_lineage = "variable"
     by_gene: Dict[str, List[Dict]] = defaultdict(list)
     for r in count_records:
         if r.get("gene_id") in (None, "", "intergenic"):
@@ -179,19 +226,19 @@ def test_genes(count_records: List[Dict], *,
 
     for gene_id, recs in by_gene.items():
         null_p = _gene_null(recs)
-        plant_pairs = _plant_snp_counts(recs, size_factors)
+        plant_pairs = _plant_snp_counts(recs, size_factors, with_null=True)
 
         plant_res: Dict[str, Dict] = {}
-        for plant, pairs in plant_pairs.items():
-            res = _plant_test(pairs, null_p)
+        for plant, triples in plant_pairs.items():
+            res = _plant_test(triples)
             if res is not None:
                 plant_res[plant] = res
         if not plant_res:
             continue
 
-        # Per-plant direction (relative to the null) and effect.
-        plant_dir = {p: st.direction(cont_ratio(r["k"], r["n"]), null_p)
-                     for p, r in plant_res.items()}
+        # Per-plant direction (relative to each test's own null — gene null for
+        # the pooled path, per-SNP shift sign for the heterogeneous-null path).
+        plant_dir = {p: r["dir"] for p, r in plant_res.items()}
         bg_log2 = {}
         for p, r in plant_res.items():
             bg_log2.setdefault(bg_of_plant[p], []).append(r["log2"])
@@ -213,8 +260,8 @@ def test_genes(count_records: List[Dict], *,
         low_ambiguity = other_fraction <= max_other_fraction
         # Displayed effect uses the flower-NORMALISED, plant-summed counts so the
         # ratio matches what the per-plant tests actually saw.
-        norm_k = sum(k for pairs in plant_pairs.values() for k, _ in pairs)
-        norm_n = sum(n for pairs in plant_pairs.values() for _, n in pairs)
+        norm_k = sum(k for trips in plant_pairs.values() for k, _, _ in trips)
+        norm_n = sum(n for trips in plant_pairs.values() for _, n, _ in trips)
         mean_ratio = (norm_k / norm_n) if norm_n else null_p
         log2_ratio = (math.log2(mean_ratio / (1 - mean_ratio))
                       if 0 < mean_ratio < 1 else float("nan"))
@@ -223,12 +270,21 @@ def test_genes(count_records: List[Dict], *,
         consistent = (n_backgrounds >= 2 and len(dirs) == 1)
 
         # Within-plant per-SNP direction concordance (audit M5).
-        phase_conc = _phase_concordant(recs, null_p)
+        phase_conc = _phase_concordant(recs)
 
         n_plants_fixed = sum(1 for r in plant_res.values()
                              if (r["n"] - r["k"]) > 0)
+        n_plants_variable = sum(1 for r in plant_res.values() if r["k"] > 0)
         fixed_seen = f_tot > 0
-        possible_ref_bias = bool(ref_is_variable and not fixed_seen)
+        variable_seen = v_tot > 0
+        # A single-parent reference loses the OTHER parent's allele to mapping
+        # bias, manufacturing apparent complete ASE toward the reference. Flag it
+        # whichever lineage the reference equals (audit M3, now symmetric):
+        #   reference == variable  & fixed allele never seen   -> suspect
+        #   reference == fixed     & variable allele never seen -> suspect
+        possible_ref_bias = bool(
+            (ref_lineage == "variable" and not fixed_seen)
+            or (ref_lineage == "fixed" and not variable_seen))
 
         # In read-backed (haplotype) mode each gene is one pseudo-SNP record, so
         # report the real number of SNPs phased into the reads instead.
@@ -261,6 +317,8 @@ def test_genes(count_records: List[Dict], *,
             "phase_concordant": phase_conc,
             "ambiguous_fraction": round(other_fraction, 4),
             "low_ambiguity": low_ambiguity,
+            "variable_allele_seen": variable_seen,
+            "n_plants_variable_seen": n_plants_variable,
             "fixed_allele_seen": fixed_seen,
             "n_plants_fixed_seen": n_plants_fixed,
             "possible_ref_bias": possible_ref_bias,
@@ -424,8 +482,9 @@ def plant_gene_detail(count_records: List[Dict], *,
     rows: List[Dict] = []
     for gene_id, recs in by_gene.items():
         null_p = _gene_null(recs)
-        for plant, pairs in _plant_snp_counts(recs, size_factors).items():
-            res = _plant_test(pairs, null_p)
+        for plant, triples in _plant_snp_counts(recs, size_factors,
+                                                with_null=True).items():
+            res = _plant_test(triples)
             if res is None:
                 continue
             k, n = res["k"], res["n"]

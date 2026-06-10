@@ -89,10 +89,17 @@ def call_state(call: SampleCall, *, min_depth: int, maf_threshold: float) -> str
         return MISSING
     if call.gt is None:
         return MISSING
-    a, b = call.gt
-    if a == b:
-        return HOM_REF if a == "0" else HOM_ALT
-    return HET
+    # Ploidy-agnostic: use the distinct alleles present (dosage is irrelevant to
+    # the phasing logic, which works on allele *sets*). A biallelic site can only
+    # carry indices '0'/'1', so a tetraploid '0/0/0/1' is simply HET here.
+    alleles = set(call.gt)
+    if alleles == {"0"}:
+        return HOM_REF
+    if alleles == {"1"}:
+        return HOM_ALT
+    if alleles <= {"0", "1"}:
+        return HET
+    return MISSING                               # an index > 1: not biallelic
 
 
 def _allele_set(state: str) -> Optional[Set[str]]:
@@ -264,4 +271,19 @@ def find_informative_snps(cfg: CrossConfig, vcf_path: str, *,
             snp.gene_id, snp.gene_name, snp.location = (
                 hit.gene_id, hit.gene_name, hit.location)
         out.append(snp)
+
+    # A common silent-failure mode: the upstream caller wrote a low or missing
+    # QUAL for every record (now exempted from the filter only when literally
+    # '.'), or the chromosome filter matched nothing, so no site survived. Warn
+    # rather than return an empty set with no explanation.
+    if stats.total == 0:
+        print(f"  WARNING: no variant sites passed the site filters "
+              f"(min_qual={min_qual}"
+              + (f", chrom_filter='{chrom_filter}'" if chrom_filter else "")
+              + ", snps_only). If your VCF has numeric QUAL scores below "
+              f"{min_qual}, lower --min-qual; check the chromosome-name filter.")
+    elif stats.informative == 0 and stats.biallelic_snp > 0:
+        print(f"  WARNING: {stats.biallelic_snp} biallelic SNP(s) scanned but "
+              "none were informative for any F1 — check parent/F1 genotype "
+              "depth (--min-parent-depth) and that the VCF contains the parents.")
     return out, stats

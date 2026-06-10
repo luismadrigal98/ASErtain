@@ -81,7 +81,7 @@ def run_pipeline(config: str, vcf: str, out_prefix: str, *,
         counts, alpha=alpha, min_effect_log2=min_effect_log2,
         min_plants=min_plants, flower_norm=flower_norm,
         max_other_fraction=max_other_fraction,
-        ref_is_variable=(cfg.reference.identity == "variable"))
+        ref_lineage=cfg.reference_lineage())
     write_table(genes, GENE_COLS, f"{out_prefix}.gene_ase.tsv",
                 comment="ASErtain gene-level ASE", labels=labels)
     n_ase = sum(1 for g in genes if g["ase_call"])

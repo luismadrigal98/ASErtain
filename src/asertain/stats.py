@@ -232,3 +232,116 @@ def betabinom_test(obs: Sequence[Tuple[int, int]],
         log2_ratio=math.log2(mu / (1 - mu)) if 0 < mu < 1 else float("nan"),
         p_value=p,
         converged=bool(full.success and null.success and lr >= -1e-6))
+
+
+# ---------------------------------------------------------------------------
+# Per-SNP-null shift test (for heterogeneous nulls, e.g. --bias-mode null-shift)
+# ---------------------------------------------------------------------------
+#
+# When a gene's SNPs do NOT share a null (each SNP has its own expected
+# variable-allele fraction p0_i, as under a per-SNP balanced-control table),
+# you must NOT pool the counts and test the pooled ratio against an averaged
+# null — that conflates real imbalance with heterogeneity of the nulls
+# themselves (audit C1). Instead we fit a single *logit shift* delta shared
+# across the plant's SNPs:
+#
+#     logit(p_i) = logit(p0_i) + delta            (H1: delta free)
+#     logit(p_i) = logit(p0_i)                    (H0: delta = 0; each SNP at
+#                                                  its own null)
+#
+# and test delta = 0 by a likelihood-ratio test (df = 1). delta is the common
+# allelic shift on the log-odds scale, so a single coherent ASE direction is
+# estimated while each SNP is correctly centred on its own bias. Overdispersion
+# (rho) is carried when there are enough SNPs, exactly as in `betabinom_test`;
+# otherwise the binomial (rho -> 0) form is used.
+
+
+@dataclass
+class ShiftTest:
+    delta: float          # logit-scale shift shared across the SNPs
+    rho: Optional[float]  # overdispersion (None for the binomial form)
+    log2_ratio: float     # delta expressed as a log2-odds shift (sign = direction)
+    p_value: float
+    method: str           # 'betabinom_shift' | 'binom_shift'
+    converged: bool
+
+
+def _logit_np(p):
+    p = np.clip(np.asarray(p, dtype=float), 1e-9, 1 - 1e-9)
+    return np.log(p / (1 - p))
+
+
+def _shift_binom_nll(delta: float, ks, ns, base_logit) -> float:
+    p = 1.0 / (1.0 + np.exp(-(base_logit + delta)))
+    p = np.clip(p, 1e-12, 1 - 1e-12)
+    return -float(np.sum(ks * np.log(p) + (ns - ks) * np.log(1 - p)))
+
+
+def _shift_bb_nll(delta: float, rho: float, ks, ns, base_logit) -> float:
+    rho = min(max(rho, 1e-6), 1 - 1e-6)
+    s = (1 - rho) / rho
+    mu = 1.0 / (1.0 + np.exp(-(base_logit + delta)))
+    a, b = mu * s, (1 - mu) * s
+    ll = stats.betabinom.logpmf(ks, ns, a, b)
+    if not np.all(np.isfinite(ll)):
+        return 1e12
+    return -float(np.sum(ll))
+
+
+def shift_test(obs: Sequence[Tuple[int, int, float]]) -> Optional[ShiftTest]:
+    """LRT for a common logit shift away from each observation's own null.
+
+    `obs` is a list of (k, n, null_p) — one per SNP within a plant, where the
+    nulls may differ. Needs >= 1 observation with n > 0. Uses the beta-binomial
+    (overdispersed) form when there are >= MIN_SNPS_FOR_BETABINOM SNPs and it
+    converges, else the binomial form. Returns None if there is nothing to test.
+    """
+    triples = [(k, n, p0) for k, n, p0 in obs if n > 0]
+    if not triples:
+        return None
+    ks = np.array([k for k, _, _ in triples], dtype=float)
+    ns = np.array([n for _, n, _ in triples], dtype=float)
+    base = _logit_np([p0 for _, _, p0 in triples])
+
+    use_bb = len(triples) >= 3      # mirrors MIN_SNPS_FOR_BETABINOM in testing
+    if use_bb:
+        best = None
+        for r in _RHO_SEEDS:
+            res = optimize.minimize(
+                lambda t: _shift_bb_nll(t[0], 1 / (1 + math.exp(-t[1])),
+                                        ks, ns, base),
+                [0.0, logit(r)], method="Nelder-Mead",
+                options={"xatol": 1e-5, "fatol": 1e-5, "maxiter": 4000})
+            if best is None or res.fun < best.fun:
+                best = res
+        # Refit rho under H0 (delta fixed at 0) for a proper nested LRT.
+        null_fit = None
+        for r in _RHO_SEEDS:
+            res0 = optimize.minimize(
+                lambda t: _shift_bb_nll(0.0, 1 / (1 + math.exp(-t[0])),
+                                        ks, ns, base),
+                [logit(r)], method="Nelder-Mead",
+                options={"xatol": 1e-5, "fatol": 1e-5, "maxiter": 4000})
+            if null_fit is None or res0.fun < null_fit.fun:
+                null_fit = res0
+        if best.success and null_fit.success:
+            delta = float(best.x[0])
+            rho = 1 / (1 + math.exp(-best.x[1]))
+            lr = 2 * (null_fit.fun - best.fun)
+            p = float(stats.chi2.sf(max(lr, 0.0), df=1))
+            return ShiftTest(delta=delta, rho=rho,
+                             log2_ratio=delta / math.log(2), p_value=p,
+                             method="betabinom_shift",
+                             converged=bool(lr >= -1e-6))
+        # fall through to the binomial form if the bb fit did not converge
+
+    full = optimize.minimize(
+        lambda t: _shift_binom_nll(t[0], ks, ns, base),
+        [0.0], method="Nelder-Mead",
+        options={"xatol": 1e-6, "fatol": 1e-6, "maxiter": 4000})
+    delta = float(full.x[0])
+    lr = 2 * (_shift_binom_nll(0.0, ks, ns, base) - full.fun)
+    p = float(stats.chi2.sf(max(lr, 0.0), df=1))
+    return ShiftTest(delta=delta, rho=None, log2_ratio=delta / math.log(2),
+                     p_value=p, method="binom_shift",
+                     converged=bool(full.success and lr >= -1e-6))

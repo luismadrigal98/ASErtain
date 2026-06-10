@@ -87,9 +87,15 @@ def _add_test_opts(p: argparse.ArgumentParser) -> None:
                         "called (low_ambiguity); for --counter haplotype this is "
                         "the both-haplotype 'ambiguous' fragment fraction, a "
                         "phasing-quality QC (default: 0.10)")
+    g.add_argument("--reference-lineage", default=None,
+                   choices=["variable", "fixed"],
+                   help="The lineage the mapping reference equals. Flags genes "
+                        "whose OTHER-lineage allele is never seen as possible "
+                        "reference-mapping artefacts (works for either parent as "
+                        "the reference). `asertain run` derives this from the "
+                        "config's reference.identity automatically.")
     g.add_argument("--ref-is-variable", action="store_true",
-                   help="Reference equals the variable lineage; flags genes whose "
-                        "fixed allele is never seen as possible mapping artefacts")
+                   help="Deprecated alias for --reference-lineage variable.")
     g.add_argument("--verbose", action="store_true",
                    help="Also write audit/intermediate tables: per gene×SNP×plant "
                         "allele counts and per gene×plant test inputs/outputs")
@@ -185,10 +191,11 @@ def cmd_test(args) -> int:
     _ensure_out_dir(args.out)
     counts = read_allele_counts(args.counts)
     labels = parse_comment(args.counts)
+    ref_lineage = args.reference_lineage or ("variable" if args.ref_is_variable else None)
     genes = test_genes(counts, alpha=args.alpha,
                        min_effect_log2=args.min_effect_log2,
                        min_plants=args.min_plants,
-                       ref_is_variable=args.ref_is_variable,
+                       ref_lineage=ref_lineage,
                        flower_norm=args.flower_norm,
                        max_other_fraction=args.max_other_fraction)
     write_table(genes, GENE_COLS, f"{args.out}.gene_ase.tsv",

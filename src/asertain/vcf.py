@@ -37,7 +37,11 @@ def sample_names(path: str) -> List[str]:
 @dataclass
 class SampleCall:
     """Parsed per-sample fields at one site."""
-    gt: Optional[Tuple[str, str]]      # allele indices, e.g. ('0', '1'); None if missing
+    gt: Optional[Tuple[str, ...]]      # allele indices, e.g. ('0', '1') or
+                                       # ('0', '0', '1') for a tetraploid; None if
+                                       # missing. Any ploidy is preserved; callers
+                                       # that only need presence/absence of each
+                                       # allele use the distinct-index set.
     ad: Optional[Tuple[int, ...]]      # allelic depths (ref, alt, ...) if present
     dp: Optional[int]                  # total depth if available
 
@@ -71,14 +75,20 @@ class Variant:
         return _parse_sample_field(self.fmt, self.raw_samples[idx])
 
 
-def _parse_gt(token: str) -> Optional[Tuple[str, str]]:
+def _parse_gt(token: str) -> Optional[Tuple[str, ...]]:
+    """Parse a GT token to a tuple of allele indices, for ANY ploidy.
+
+    Diploid ('0/1'), haploid ('0'), or polyploid ('0/0/1') are all accepted; the
+    genotype-calling logic downstream uses the set of distinct alleles, so this
+    keeps polyploid samples usable instead of silently dropping them. Any missing
+    allele ('.') makes the whole call missing (None)."""
     sep = "/" if "/" in token else ("|" if "|" in token else None)
-    if sep is None:
-        return None
+    if sep is None:                              # haploid single-allele GT
+        return (token,) if token.isdigit() else None
     parts = token.split(sep)
-    if len(parts) != 2 or "." in parts:
+    if not parts or any(p in (".", "") for p in parts):
         return None
-    return parts[0], parts[1]
+    return tuple(parts)
 
 
 def _parse_sample_field(fmt: List[str], field: str) -> SampleCall:
@@ -122,11 +132,22 @@ def iter_variants(path: str, *, snps_only: bool = False,
             chrom = f[0]
             if chrom_filter and chrom_filter not in chrom:
                 continue
-            try:
-                qual = float(f[5])
-            except ValueError:
-                qual = 0.0
-            if qual < min_qual:
+            # A missing QUAL ('.') means the caller did not score the site, NOT
+            # that it scored zero. Many common callers (GATK GenotypeGVCFs,
+            # bcftools in some modes, hard-filtered VCFs) emit '.' for QUAL while
+            # still carrying confident genotypes. Coercing it to 0.0 and applying
+            # the QUAL filter would silently drop every such site. Store missing
+            # QUAL as NaN and exempt it from the filter (only a real numeric QUAL
+            # below the threshold is dropped).
+            raw_qual = f[5]
+            if raw_qual in (".", ""):
+                qual = float("nan")
+            else:
+                try:
+                    qual = float(raw_qual)
+                except ValueError:
+                    qual = float("nan")
+            if qual == qual and qual < min_qual:   # qual==qual is False for NaN
                 continue
             alt = f[4].split(",")
             ref = f[3]
