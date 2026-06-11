@@ -305,7 +305,7 @@ def _gene_qc(recs, *, ref_lineage, max_other_fraction):
     }
 
 
-def _aggregate_maxsnp(recs, *, size_factors, combine, correction, min_plants):
+def _aggregate_maxsnp(recs, *, size_factors, combine, correction, min_plants, alpha=0.05):
     """The simplest approach relative to haplotype: a plain binomial PER SNP, then take the
     strongest-signal SNP for the gene and validate that the gene's SNPs all
     point to the same parent.
@@ -334,7 +334,7 @@ def _aggregate_maxsnp(recs, *, size_factors, combine, correction, min_plants):
         return None, None
 
     dirset = {u["direction"] for u in snp_units.values()
-              if u["direction"] in ("variable", "fixed")}
+              if u["direction"] in ("variable", "fixed") and u["p_primary"] <= alpha}
     snp_concordant = len(dirset) <= 1
     agreed_dir = next(iter(dirset)) if len(dirset) == 1 else None
 
@@ -420,7 +420,8 @@ def test_genes(count_records: List[Dict], *,
         if gene_aggregation == "maxsnp":
             unit, extra = _aggregate_maxsnp(
                 recs, size_factors=size_factors, combine=combine,
-                correction=within_gene_correction, min_plants=min_plants)
+                correction=within_gene_correction, min_plants=min_plants,
+                alpha=alpha)
         else:
             unit = _score_records(recs, size_factors=size_factors,
                                   combine=combine)
