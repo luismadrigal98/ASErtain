@@ -305,7 +305,7 @@ def _gene_qc(recs, *, ref_lineage, max_other_fraction):
     }
 
 
-def _aggregate_maxsnp(recs, *, size_factors, combine, correction):
+def _aggregate_maxsnp(recs, *, size_factors, combine, correction, min_plants):
     """The advisor's alternative: a plain binomial PER SNP, then take the
     strongest-signal SNP for the gene and validate that the gene's SNPs all
     point to the same parent.
@@ -340,8 +340,14 @@ def _aggregate_maxsnp(recs, *, size_factors, combine, correction):
 
     # Strongest signal among the SNPs in the agreed direction (or all SNPs if
     # every SNP looks balanced / there is no agreed direction).
-    candidates = {sid: u for sid, u in snp_units.items()
-                  if agreed_dir is None or u["direction"] == agreed_dir}         or snp_units
+    dir_candidates = {sid: u for sid, u in snp_units.items()
+                      if agreed_dir is None or u["direction"] == agreed_dir} or snp_units
+                      
+    # Prefer SNPs that meet the structural requirements for a gene call.
+    valid_candidates = {sid: u for sid, u in dir_candidates.items()
+                        if u["n_plants"] >= min_plants and u["consistent_backgrounds"]}
+                        
+    candidates = valid_candidates if valid_candidates else dir_candidates
     top_sid, top_u = min(candidates.items(), key=lambda kv: kv[1]["p_primary"])
 
     m = len(snp_units)
@@ -414,7 +420,7 @@ def test_genes(count_records: List[Dict], *,
         if gene_aggregation == "maxsnp":
             unit, extra = _aggregate_maxsnp(
                 recs, size_factors=size_factors, combine=combine,
-                correction=within_gene_correction)
+                correction=within_gene_correction, min_plants=min_plants)
         else:
             unit = _score_records(recs, size_factors=size_factors,
                                   combine=combine)
