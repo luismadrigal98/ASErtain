@@ -74,11 +74,20 @@ def write_report(gene_ase_tsv: str, out_html: str, *,
     def _dir_label(g: Dict) -> str:
         return labels.value_to_display(str(g.get("direction", "")))
 
+    def _concordant(g: Dict) -> str:
+        # The directional-concordance gate that actually decides the call differs
+        # by aggregation: snp_concordant (maxsnp) vs phase_concordant (plant).
+        key = ("snp_concordant" if str(g.get("agg_method", "")) == "maxsnp"
+               else "phase_concordant")
+        return g.get(key, "")
+
     rows = "\n".join(
         "<tr>" + "".join(f"<td>{html.escape(str(val))}</td>" for val in (
             g.get("gene_id", ""), g.get("gene_name", ""), g.get("n_snps", ""),
             g.get("n_plants", ""), g.get("log2_ratio", ""), g.get("p_primary", ""),
             g.get("q_value", ""), _dir_label(g), g.get("consistent_backgrounds", ""),
+            _concordant(g), g.get("low_ambiguity", ""),
+            g.get("ambiguous_fraction", ""), g.get("n_snps_same_dir", ""),
             g.get("fixed_allele_seen", ""), g.get("ase_call", ""))) + "</tr>"
         for g in genes[:500]
     )
@@ -100,9 +109,19 @@ ASE genes: <b>{counts['ase_genes']}</b> &nbsp;|&nbsp;
 {html.escape(labels.fixed)}-biased: {counts['fixed_biased']}</p>
 {img}
 <h2>Per-gene results (first 500)</h2>
+<p class="k">An <b>ASE</b> call requires ALL of:
+q &lt; alpha &nbsp;·&nbsp; |log2| &ge; min-effect &nbsp;·&nbsp;
+<b>consistent</b> (same direction across backgrounds) &nbsp;·&nbsp;
+nPlant &ge; min-plants &nbsp;·&nbsp;
+<b>concordant</b> (per-SNP directions agree: snp_concordant for maxsnp,
+phase_concordant for the plant/haplotype path) &nbsp;·&nbsp;
+<b>lowAmbig</b> (ambiguous-read fraction &le; ceiling).
+<b>{html.escape(labels.fixed)}Seen</b> is provenance only — it is NOT part of the
+gate. A gene that is FALSE despite a small q fails one of the bold columns.</p>
 <table><tr><th>gene_id</th><th>name</th><th>nSNP</th><th>nPlant</th>
 <th>log2({html.escape(labels.variable)}/{html.escape(labels.fixed)})</th>
-<th>p</th><th>q</th><th>dir</th><th>consistent</th>
+<th>p</th><th>q</th><th>dir</th><th>consistent</th><th>concordant</th>
+<th>lowAmbig</th><th>ambigFrac</th><th>nSameDir</th>
 <th>{html.escape(labels.fixed)}Seen</th><th>ASE</th></tr>
 {rows}</table></body></html>"""
     with open(out_html, "w") as fh:
