@@ -18,8 +18,10 @@ REF=PGA_assembly_shortnames.fasta
 GFF=Pkunthii_annotation_viaHelixer.gff
 BAMS=BAM_files
 LOCI=anthocyanin_loci.txt
-WORK=work
+WORK=work_haplotype
+WORK2=work_pileup_maxsnp
 mkdir -p "$WORK"
+mkdir -p "$WORK2"
 
 echo "############ 0. reference + flower-BAM indexes ############"
 samtools faidx "$REF"
@@ -68,6 +70,9 @@ bcftools index -f -t "$WORK/anthocyanin.vcf.gz"
 echo "  VCF samples : $(bcftools query -l "$WORK/anthocyanin.vcf.gz" | tr '\n' ' ')"
 echo "  biallelic SNPs: $(bcftools view -H "$WORK/anthocyanin.vcf.gz" | wc -l)"
 
+# Duplicate the files in $WORK to $WORK2
+cp "$WORK/"* "$WORK2/"
+
 echo "############ 4. ASErtain pipeline (report-mode bias) ############"
 # --counter haplotype    : read-backed counting — assign each fragment to a
 #                          parental haplotype across all SNPs it covers and count
@@ -91,8 +96,29 @@ asertain run --config "$CONFIG" \
     --compute-parental-de --de-alpha 0.05 \
     --verbose                       # also write the per-SNP / per-plant audit tables
 
+echo "############ 5. ASErtain pipeline (pileup + maxsnp) ############"
+# --counter pileup       : per-SNP counting — count each SNP independently.
+# --gene-aggregation maxsnp : aggregate SNP-level counts to the gene level using
+#                          the maximum-SNP approach.
+# --flower-norm equalize : rescale each F1 flower so a deeply sequenced flower
+#                          cannot dominate its plant's allelic ratio (default).
+# --compute-parental-de  : also run variable-vs-fixed parental DE (from the
+#                          parents' RNA BAMs declared in the config) over the
+#                          candidate genes, and sanity-check each ASE call against
+#                          it (the shift should point to the more-expressed parent).
+asertain run --config "$CONFIG" \
+    --vcf "$WORK2/anthocyanin.vcf.gz" --out "$WORK2/ase" \
+    --bias-mode report \
+    --min-parent-depth 10 --maf-threshold 0.10 \
+    --min-count-depth 10 --min-mapq 20 --min-baseq 20 \
+    --counter pileup \
+    --gene-aggregation maxsnp \
+    --flower-norm equalize \
+    --compute-parental-de --de-alpha 0.05 \
+    --verbose                       # also write the per-SNP / per-plant audit tables
+
 echo
-echo "Done. Key outputs in $WORK/:"
+echo "Done. Key outputs in $WORK and $WORK2/:"
 echo "  ase.informative_snps.tsv   phased informative SNPs per F1 genome"
 echo "  ase.allele_counts.tsv      per-flower x SNP allele counts (+ <var>_is_ref)"
 echo "  ase.gene_snp_counts.tsv    [verbose] per gene x SNP counts (plants+flowers collapsed)"
