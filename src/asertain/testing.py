@@ -354,7 +354,7 @@ def _aggregate_maxsnp(recs, *, size_factors, combine, correction, min_plants):
     p_raw = float(top_u["p_primary"])
     if correction == "sidak":
         p_raw_clipped = min(max(p_raw, 0.0), 1.0)
-        p_gene = -math.expm1(m * math.log1p(-p_raw_clipped))
+        p_gene = 1.0 if p_raw_clipped == 1.0 else -math.expm1(m * math.log1p(-p_raw_clipped))
     elif correction == "bonferroni":
         p_gene = min(1.0, p_raw * m)
     else:
