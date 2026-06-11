@@ -251,8 +251,8 @@ def _score_records(recs, *, size_factors, combine):
     norm_k = sum(k for trips in plant_pairs.values() for k, _, _ in trips)
     norm_n = sum(n for trips in plant_pairs.values() for _, n, _ in trips)
     mean_ratio = (norm_k / norm_n) if norm_n else null_p
-    log2_ratio = (math.log2(mean_ratio / (1 - mean_ratio))
-                  if 0 < mean_ratio < 1 else float("nan"))
+    c_ratio = st.cont_ratio(norm_k, norm_n) if norm_n else null_p
+    log2_ratio = math.log2(c_ratio / (1 - c_ratio))
 
     dirs = {d for d in plant_dir.values() if d != "balanced"}
     consistent = (n_backgrounds >= 2 and len(dirs) == 1)
@@ -347,7 +347,8 @@ def _aggregate_maxsnp(recs, *, size_factors, combine, correction):
     m = len(snp_units)
     p_raw = float(top_u["p_primary"])
     if correction == "sidak":
-        p_gene = 1.0 - (1.0 - min(max(p_raw, 0.0), 1.0)) ** m
+        p_raw_clipped = min(max(p_raw, 0.0), 1.0)
+        p_gene = -math.expm1(m * math.log1p(-p_raw_clipped))
     elif correction == "bonferroni":
         p_gene = min(1.0, p_raw * m)
     else:
