@@ -539,6 +539,80 @@ def test_mpileup_uses_uncapped_depth_and_matched_flags():
     assert '"-B"' in src                          # BAQ disabled for ASE counting
 
 
+# ---------------------------------------------------------------------------
+# Max-SNP aggregation (advisor's per-SNP binomial + strongest-signal-per-gene
+# with directional concordance validation)
+# ---------------------------------------------------------------------------
+
+def test_maxsnp_concordant_strong_gene_is_called():
+    # 3 SNPs, two plants in two backgrounds, all variable-biased and concordant.
+    recs = []
+    for p, bg in [("P1", "b1"), ("P2", "b2")]:
+        for snp in ("chr1:100", "chr1:150", "chr1:200"):
+            recs.append(_rec(f"{p}f", p, snp, 80, 20, bg=bg))
+    g = testing.test_genes(recs, gene_aggregation="maxsnp",
+                           within_gene_correction="none")[0]
+    assert g["agg_method"] == "maxsnp"
+    assert g["snp_concordant"] is True
+    assert g["n_snps_same_dir"] == 3
+    assert g["top_snp"] in {"chr1:100", "chr1:150", "chr1:200"}
+    assert g["direction"] == "variable"
+    assert g["ase_call"] is True
+
+
+def test_maxsnp_discordant_gene_is_blocked():
+    # SNP1 strongly variable, SNP2 strongly fixed -> the gene's SNPs disagree on
+    # the parent, so the concordance validation must veto the call even though
+    # each SNP on its own is individually significant.
+    recs = []
+    for p, bg in [("P1", "b1"), ("P2", "b2")]:
+        recs.append(_rec(f"{p}f", p, "chr1:100", 88, 12, bg=bg))   # variable
+        recs.append(_rec(f"{p}f", p, "chr1:200", 12, 88, bg=bg))   # fixed
+    g = testing.test_genes(recs, gene_aggregation="maxsnp")[0]
+    assert g["snp_concordant"] is False
+    assert g["ase_call"] is False
+
+
+def test_maxsnp_within_gene_correction_is_conservative():
+    # The selected best-of-m p-value must be >= under sidak/bonferroni than
+    # under 'none' (the correction can only make the gene p larger).
+    recs = []
+    for p, bg in [("P1", "b1"), ("P2", "b2")]:
+        for snp in ("chr1:100", "chr1:150", "chr1:200", "chr1:250"):
+            recs.append(_rec(f"{p}f", p, snp, 78, 22, bg=bg))
+    p_none = testing.test_genes(recs, gene_aggregation="maxsnp",
+                                within_gene_correction="none")[0]["p_primary"]
+    p_sidak = testing.test_genes(recs, gene_aggregation="maxsnp",
+                                 within_gene_correction="sidak")[0]["p_primary"]
+    p_bonf = testing.test_genes(recs, gene_aggregation="maxsnp",
+                                within_gene_correction="bonferroni")[0]["p_primary"]
+    assert p_sidak >= p_none - 1e-12
+    assert p_bonf >= p_none - 1e-12
+
+
+def test_maxsnp_requires_cross_background_consistency():
+    # A gene resolved in a single background cannot pass (same guard as the
+    # plant path): two plants but only one background.
+    recs = []
+    for p in ("P1", "P2"):
+        for snp in ("chr1:100", "chr1:150"):
+            recs.append(_rec(f"{p}f", p, snp, 85, 15, bg="onlybg"))
+    g = testing.test_genes(recs, gene_aggregation="maxsnp")[0]
+    assert g["consistent_backgrounds"] is False
+    assert g["ase_call"] is False
+
+
+def test_plant_and_maxsnp_share_output_schema():
+    recs = [_rec(f"{p}f", p, "chr1:100", 80, 20, bg=b)
+            for p, b in [("P1", "b1"), ("P2", "b2")]]
+    gp = testing.test_genes(recs, gene_aggregation="plant")[0]
+    gm = testing.test_genes(recs, gene_aggregation="maxsnp")[0]
+    # Both rows carry exactly the documented gene columns.
+    assert set(testing.GENE_COLS).issuperset(gp.keys())
+    assert set(testing.GENE_COLS).issuperset(gm.keys())
+    assert gp["agg_method"] == "plant" and gm["agg_method"] == "maxsnp"
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]
@@ -552,3 +626,5 @@ def _run_all():
 
 if __name__ == "__main__":
     _run_all()
+
+

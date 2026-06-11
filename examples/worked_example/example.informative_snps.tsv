@@ -1,0 +1,14 @@
+# ASErtain informative SNPs
+# source_vcf: example.vcf
+# variable_label: kunthii
+# fixed_label: amphorellae
+chrom	pos	ref	alt	qual	classification	n_plants	backgrounds	per_plant	gene_id	gene_name	location
+chr1	1000	A	T	99.00	shared	4	bg1,bg2	P1:A/T/both_hom;P2:A/T/both_hom;P3:A/T/both_hom;P4:A/T/both_hom	GENE_A	GENE_A	genic
+chr1	1060	A	T	99.00	shared	4	bg1,bg2	P1:A/T/both_hom;P2:A/T/both_hom;P3:A/T/both_hom;P4:A/T/both_hom	GENE_A	GENE_A	genic
+chr1	1120	A	T	99.00	shared	4	bg1,bg2	P1:A/T/both_hom;P2:A/T/both_hom;P3:A/T/both_hom;P4:A/T/both_hom	GENE_A	GENE_A	genic
+chr1	2000	A	T	99.00	shared	4	bg1,bg2	P1:A/T/both_hom;P2:A/T/both_hom;P3:A/T/both_hom;P4:A/T/both_hom	GENE_B	GENE_B	genic
+chr1	2075	A	T	99.00	shared	4	bg1,bg2	P1:A/T/both_hom;P2:A/T/both_hom;P3:A/T/both_hom;P4:A/T/both_hom	GENE_B	GENE_B	genic
+chr1	2150	A	T	99.00	shared	4	bg1,bg2	P1:A/T/both_hom;P2:A/T/both_hom;P3:A/T/both_hom;P4:A/T/both_hom	GENE_B	GENE_B	genic
+chr1	2225	A	T	99.00	shared	4	bg1,bg2	P1:A/T/both_hom;P2:A/T/both_hom;P3:A/T/both_hom;P4:A/T/both_hom	GENE_B	GENE_B	genic
+chr1	3000	A	T	99.00	shared	4	bg1,bg2	P1:A/T/both_hom;P2:A/T/both_hom;P3:A/T/both_hom;P4:A/T/both_hom	GENE_C	GENE_C	genic
+chr1	3090	A	T	99.00	shared	4	bg1,bg2	P1:A/T/both_hom;P2:A/T/both_hom;P3:A/T/both_hom;P4:A/T/both_hom	GENE_C	GENE_C	genic

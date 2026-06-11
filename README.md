@@ -132,6 +132,35 @@ is rescaled so a deeply sequenced one cannot dominate its plant's ratio.
   call opposing the DE (`discordant_compensatory`) is flagged as opposing
   cis/trans, not silently trusted.
 
+## Two LD-robust ways to aggregate a gene's SNPs
+
+SNPs in one gene are in linkage disequilibrium, so they must not be pooled
+naively (a read spanning several is counted at each, inflating depth and
+shrinking p-values). ASErtain offers two principled routes, selectable with
+`asertain test --gene-aggregation`:
+
+* **`plant`** (default) — pool each plant's SNPs, test per plant, combine
+  plants. Fed by `--counter haplotype` this gives one *independent* (K, N) per
+  gene (each fragment counted once), the most powerful option.
+* **`maxsnp`** — a **plain binomial per SNP**, take the **strongest-signal SNP**
+  per gene, and require the gene's SNPs to **agree in direction** (all point to
+  the same parent). It never pools correlated SNPs, so LD cannot inflate it; the
+  best-of-*m*-SNPs selection is corrected with `--within-gene-correction`
+  (`sidak`|`bonferroni`|`none`). Extra output columns: `agg_method`, `top_snp`,
+  `top_snp_p`, `n_snps_same_dir`, `snp_concordant`.
+
+On simulated data (see `examples/benchmark_approaches.py` /
+`benchmark_strata.py`) the two recover the **same ASE genes to a high degree**
+(Jaccard ~85–90%; ~98% of `maxsnp` calls are also `plant`/haplotype calls) at
+~0% empirical FDR — so `maxsnp` is a strong LD-robust cross-check, while the
+haplotype path stays the primary because it is more sensitive on
+moderate-effect genes.
+
+**New to the pipeline? Read `ASErtain_pipeline_walkthrough.ipynb`** — an
+executable, plain-language tour of every stage with a tiny worked example
+(genes, SNPs, and the actual input/intermediate/output files), runnable with no
+BAM/VCF/`samtools` (it simulates the counts).
+
 ## Status
 
 Fully implemented and tested (synthetic + live BAMs): `diagnose`, `count`

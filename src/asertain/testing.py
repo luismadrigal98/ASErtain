@@ -46,6 +46,8 @@ GENE_COLS = [
     "variable_allele_seen", "n_plants_variable_seen",
     "fixed_allele_seen", "n_plants_fixed_seen", "possible_ref_bias",
     "n_both_hom_snps", "ase_call",
+    "agg_method", "top_snp", "top_snp_p", "n_snps_same_dir",
+    "snp_concordant", "within_gene_correction",
 ]
 
 # Default ceiling on the fraction of allele-overlapping reads that match neither
@@ -54,6 +56,18 @@ GENE_COLS = [
 # for --counter pileup they are third-allele / error reads. A gene above the
 # ceiling is flagged (low_ambiguity=False) and not called.
 MAX_OTHER_FRACTION = 0.10
+
+# Aggregation strategies for turning a gene's SNPs into one call.
+#   "plant"  : the default/haplotype path -- pool a plant's SNPs, test each
+#              plant, combine plants (LD handled by the haplotype counter or
+#              absorbed as dispersion by the beta-binomial).
+#   "maxsnp" : the advisor's alternative -- a plain binomial PER SNP, take the
+#              strongest-signal SNP per gene, and require the gene's SNPs to
+#              agree in direction (all point to the same parent). Avoids LD by
+#              never combining correlated SNPs; the selection of the best of m
+#              SNPs is corrected with WITHIN_GENE_CORRECTION below.
+GENE_AGGREGATION_MODES = ("plant", "maxsnp")
+WITHIN_GENE_CORRECTION_MODES = ("sidak", "bonferroni", "none")
 
 
 def _gene_null(records: List[Dict]) -> float:
@@ -201,6 +215,157 @@ def _plant_test(triples: List[Tuple[int, int, float]]) -> Optional[Dict]:
             "n_snps": n_snps, "rho": None}
 
 
+def _score_records(recs, *, size_factors, combine):
+    """Statistical aggregate for a set of count records treated as ONE unit.
+
+    The unit is a whole gene for ``gene_aggregation="plant"`` (the default /
+    haplotype path) or a single SNP for ``gene_aggregation="maxsnp"``. In both
+    cases the per-plant test + plant-combine machinery is identical — only the
+    set of records handed in differs. Returns None if no plant is testable.
+    """
+    plant_pairs = _plant_snp_counts(recs, size_factors, with_null=True)
+    plant_res: Dict[str, Dict] = {}
+    for plant, triples in plant_pairs.items():
+        res = _plant_test(triples)
+        if res is not None:
+            plant_res[plant] = res
+    if not plant_res:
+        return None
+
+    null_p = _gene_null(recs)
+    bg_of_plant = {r["plant"]: r["background"] for r in recs}
+    plant_dir = {p: r["dir"] for p, r in plant_res.items()}
+    bg_log2: Dict[str, List[float]] = {}
+    for p, r in plant_res.items():
+        bg_log2.setdefault(bg_of_plant[p], []).append(r["log2"])
+    n_backgrounds = len(bg_log2)
+
+    p_maxp = max(r["p"] for r in plant_res.values())
+    if combine == "stouffer":
+        p_primary_val = st.stouffer_combine(
+            [(r["p"], plant_dir[p]) for p, r in plant_res.items()])
+    else:
+        p_primary_val = p_maxp
+    methods = sorted({r["method"] for r in plant_res.values()})
+
+    norm_k = sum(k for trips in plant_pairs.values() for k, _, _ in trips)
+    norm_n = sum(n for trips in plant_pairs.values() for _, n, _ in trips)
+    mean_ratio = (norm_k / norm_n) if norm_n else null_p
+    log2_ratio = (math.log2(mean_ratio / (1 - mean_ratio))
+                  if 0 < mean_ratio < 1 else float("nan"))
+
+    dirs = {d for d in plant_dir.values() if d != "balanced"}
+    consistent = (n_backgrounds >= 2 and len(dirs) == 1)
+    n_plants_fixed = sum(1 for r in plant_res.values() if (r["n"] - r["k"]) > 0)
+    n_plants_variable = sum(1 for r in plant_res.values() if r["k"] > 0)
+
+    return {
+        "p_primary": p_primary_val, "p_maxp": p_maxp,
+        "mean_ratio": mean_ratio, "log2_ratio": log2_ratio,
+        "direction": st.direction(mean_ratio, null_p),
+        "method": "+".join(methods),
+        "per_plant_log2": ";".join(f"{p}={r['log2']:.3f}"
+                                   for p, r in sorted(plant_res.items())),
+        "per_plant_p": ";".join(f"{p}={r['p']:.2e}"
+                                for p, r in sorted(plant_res.items())),
+        "n_plants": len(plant_res), "n_backgrounds": n_backgrounds,
+        "consistent_backgrounds": consistent,
+        "n_plants_variable_seen": n_plants_variable,
+        "n_plants_fixed_seen": n_plants_fixed,
+    }
+
+
+def _gene_qc(recs, *, ref_lineage, max_other_fraction):
+    """Gene-level QC / provenance, always computed over ALL the gene's records
+    (independent of the aggregation strategy used for the call)."""
+    null_p = _gene_null(recs)
+    v_tot = sum(r["variable_count"] for r in recs)
+    f_tot = sum(r["fixed_count"] for r in recs)
+    o_tot = sum(r.get("other_count", 0) for r in recs)
+    total_obs = v_tot + f_tot + o_tot
+    other_fraction = (o_tot / total_obs) if total_obs else 0.0
+    fixed_seen = f_tot > 0
+    variable_seen = v_tot > 0
+    possible_ref_bias = bool(
+        (ref_lineage == "variable" and not fixed_seen)
+        or (ref_lineage == "fixed" and not variable_seen))
+    hap_counts = [r["n_hap_snps"] for r in recs
+                  if r.get("n_hap_snps") not in (None, "")]
+    n_snps = max(hap_counts) if hap_counts else len({r["snp_id"] for r in recs})
+    return {
+        "null_p": null_p, "variable_reads": v_tot, "fixed_reads": f_tot,
+        "other_reads": o_tot, "ambiguous_fraction": other_fraction,
+        "low_ambiguity": other_fraction <= max_other_fraction,
+        "variable_allele_seen": variable_seen, "fixed_allele_seen": fixed_seen,
+        "possible_ref_bias": possible_ref_bias,
+        "phase_concordant": _phase_concordant(recs),
+        "n_snps": n_snps,
+        "n_both_hom_snps": len({r["snp_id"] for r in recs
+                                if r.get("tier") == "both_hom"}),
+    }
+
+
+def _aggregate_maxsnp(recs, *, size_factors, combine, correction):
+    """The advisor's alternative: a plain binomial PER SNP, then take the
+    strongest-signal SNP for the gene and validate that the gene's SNPs all
+    point to the same parent.
+
+    Rationale. SNPs in one gene are in LD, so combining them (pileup pooling)
+    pseudo-replicates the same molecule and inflates significance. Rather than
+    model that correlation, we sidestep it: each SNP is tested on its own
+    (one independent binomial per SNP, replicate-aware via the same per-plant
+    max-p combine), and the gene takes its **best** SNP. Because we picked the
+    best of ``m`` SNPs, the selected p is corrected for ``m`` (Sidak by
+    default; under LD the SNPs are positively correlated so this is
+    conservative). The validation the advisor asked for is the directional
+    **concordance** requirement: every informative SNP of the gene must point
+    the same way (same parent); a gene whose SNPs disagree is not called.
+    """
+    by_snp: Dict[str, List[Dict]] = defaultdict(list)
+    for r in recs:
+        by_snp[r["snp_id"]].append(r)
+
+    snp_units: Dict[str, Dict] = {}
+    for sid, srecs in by_snp.items():
+        u = _score_records(srecs, size_factors=size_factors, combine=combine)
+        if u is not None:
+            snp_units[sid] = u
+    if not snp_units:
+        return None, None
+
+    dirset = {u["direction"] for u in snp_units.values()
+              if u["direction"] in ("variable", "fixed")}
+    snp_concordant = len(dirset) <= 1
+    agreed_dir = next(iter(dirset)) if len(dirset) == 1 else None
+
+    # Strongest signal among the SNPs in the agreed direction (or all SNPs if
+    # every SNP looks balanced / there is no agreed direction).
+    candidates = {sid: u for sid, u in snp_units.items()
+                  if agreed_dir is None or u["direction"] == agreed_dir}         or snp_units
+    top_sid, top_u = min(candidates.items(), key=lambda kv: kv[1]["p_primary"])
+
+    m = len(snp_units)
+    p_raw = float(top_u["p_primary"])
+    if correction == "sidak":
+        p_gene = 1.0 - (1.0 - min(max(p_raw, 0.0), 1.0)) ** m
+    elif correction == "bonferroni":
+        p_gene = min(1.0, p_raw * m)
+    else:
+        p_gene = p_raw
+
+    n_same_dir = sum(1 for u in snp_units.values()
+                     if agreed_dir and u["direction"] == agreed_dir)
+    unit = dict(top_u)
+    unit["p_primary"] = p_gene
+    extra = {
+        "agg_method": "maxsnp", "top_snp": top_sid,
+        "top_snp_p": round(p_raw, 6),
+        "n_snps_same_dir": n_same_dir, "snp_concordant": snp_concordant,
+        "within_gene_correction": correction,
+    }
+    return unit, extra
+
+
 def test_genes(count_records: List[Dict], *,
                alpha: float = 0.05,
                min_effect_log2: float = 0.0,
@@ -209,134 +374,102 @@ def test_genes(count_records: List[Dict], *,
                ref_lineage: Optional[str] = None,
                flower_norm: str = "equalize",
                combine: str = "maxp",
+               gene_aggregation: str = "plant",
+               within_gene_correction: str = "sidak",
                max_other_fraction: float = MAX_OTHER_FRACTION) -> List[Dict]:
     # `ref_lineage` ('variable'/'fixed'/None) is the lineage the reference equals,
     # and drives the symmetric reference-bias flag. `ref_is_variable=True` is the
     # backward-compatible alias for ref_lineage='variable'.
+    #
+    # `gene_aggregation` selects how a gene's SNPs become one call:
+    #   "plant"  (default) pool a plant's SNPs, test each plant, combine plants —
+    #            the path the read-backed haplotype counter feeds (one (K,N)/gene).
+    #   "maxsnp" plain binomial per SNP, take the strongest SNP, require the
+    #            gene's SNPs to agree in direction. `within_gene_correction`
+    #            ('sidak'|'bonferroni'|'none') corrects the picked-best-of-m p.
     if ref_lineage is None and ref_is_variable:
         ref_lineage = "variable"
     if combine not in ("maxp", "stouffer"):
         raise ValueError(f"unknown combine rule '{combine}'; choose maxp|stouffer")
+    if gene_aggregation not in GENE_AGGREGATION_MODES:
+        raise ValueError(f"unknown gene_aggregation '{gene_aggregation}'; "
+                         f"choose from {GENE_AGGREGATION_MODES}")
+    if within_gene_correction not in WITHIN_GENE_CORRECTION_MODES:
+        raise ValueError(f"unknown within_gene_correction "
+                         f"'{within_gene_correction}'; choose from "
+                         f"{WITHIN_GENE_CORRECTION_MODES}")
     by_gene: Dict[str, List[Dict]] = defaultdict(list)
     for r in count_records:
         if r.get("gene_id") in (None, "", "intergenic"):
             continue
         by_gene[r["gene_id"]].append(r)
 
-    bg_of_plant = {r["plant"]: r["background"] for r in count_records}
     size_factors = flower_size_factors(count_records, mode=flower_norm)
     results: List[Dict] = []
 
     for gene_id, recs in by_gene.items():
-        null_p = _gene_null(recs)
-        plant_pairs = _plant_snp_counts(recs, size_factors, with_null=True)
-
-        plant_res: Dict[str, Dict] = {}
-        for plant, triples in plant_pairs.items():
-            res = _plant_test(triples)
-            if res is not None:
-                plant_res[plant] = res
-        if not plant_res:
+        qc = _gene_qc(recs, ref_lineage=ref_lineage,
+                      max_other_fraction=max_other_fraction)
+        if gene_aggregation == "maxsnp":
+            unit, extra = _aggregate_maxsnp(
+                recs, size_factors=size_factors, combine=combine,
+                correction=within_gene_correction)
+        else:
+            unit = _score_records(recs, size_factors=size_factors,
+                                  combine=combine)
+            extra = {"agg_method": "plant", "top_snp": "NA", "top_snp_p": "NA",
+                     "n_snps_same_dir": "NA",
+                     "snp_concordant": qc["phase_concordant"],
+                     "within_gene_correction": "none"}
+        if unit is None:
             continue
 
-        # Per-plant direction (relative to each test's own null — gene null for
-        # the pooled path, per-SNP shift sign for the heterogeneous-null path).
-        plant_dir = {p: r["dir"] for p, r in plant_res.items()}
-        bg_log2 = {}
-        for p, r in plant_res.items():
-            bg_log2.setdefault(bg_of_plant[p], []).append(r["log2"])
-        bg_mean_log2 = {bg: sum(v) / len(v) for bg, v in bg_log2.items()}
-
-        n_backgrounds = len(bg_mean_log2)
-        # Combine the per-plant tests. Default 'maxp' = intersection–union: the
-        # gene p is the WORST (max) per-plant p, so every plant must be
-        # individually significant (honest/conservative at n=2). 'stouffer' is
-        # the scalable alternative: a directional aggregate that gains power as
-        # plants are added (still gated by cross-background consistency below).
-        p_maxp = max(r["p"] for r in plant_res.values())
-        if combine == "stouffer":
-            p_primary_val = st.stouffer_combine(
-                [(r["p"], plant_dir[p]) for p, r in plant_res.items()])
-        else:
-            p_primary_val = p_maxp
-        methods = sorted({r["method"] for r in plant_res.values()})
-
-        # Raw read totals (provenance — actual reads observed).
-        v_tot = sum(r["variable_count"] for r in recs)
-        f_tot = sum(r["fixed_count"] for r in recs)
-        o_tot = sum(r.get("other_count", 0) for r in recs)
-        # Ambiguous/other fraction — phasing-quality QC (esp. for --counter
-        # haplotype, where 'other' = fragments carrying BOTH haplotypes).
-        total_obs = v_tot + f_tot + o_tot
-        other_fraction = (o_tot / total_obs) if total_obs else 0.0
-        low_ambiguity = other_fraction <= max_other_fraction
-        # Displayed effect uses the flower-NORMALISED, plant-summed counts so the
-        # ratio matches what the per-plant tests actually saw.
-        norm_k = sum(k for trips in plant_pairs.values() for k, _, _ in trips)
-        norm_n = sum(n for trips in plant_pairs.values() for _, n, _ in trips)
-        mean_ratio = (norm_k / norm_n) if norm_n else null_p
-        log2_ratio = (math.log2(mean_ratio / (1 - mean_ratio))
-                      if 0 < mean_ratio < 1 else float("nan"))
-
-        dirs = {d for d in plant_dir.values() if d != "balanced"}
-        consistent = (n_backgrounds >= 2 and len(dirs) == 1)
-
-        # Within-plant per-SNP direction concordance (audit M5).
-        phase_conc = _phase_concordant(recs)
-
-        n_plants_fixed = sum(1 for r in plant_res.values()
-                             if (r["n"] - r["k"]) > 0)
-        n_plants_variable = sum(1 for r in plant_res.values() if r["k"] > 0)
-        fixed_seen = f_tot > 0
-        variable_seen = v_tot > 0
-        # A single-parent reference loses the OTHER parent's allele to mapping
-        # bias, manufacturing apparent complete ASE toward the reference. Flag it
-        # whichever lineage the reference equals (audit M3, now symmetric):
-        #   reference == variable  & fixed allele never seen   -> suspect
-        #   reference == fixed     & variable allele never seen -> suspect
-        possible_ref_bias = bool(
-            (ref_lineage == "variable" and not fixed_seen)
-            or (ref_lineage == "fixed" and not variable_seen))
-
-        # In read-backed (haplotype) mode each gene is one pseudo-SNP record, so
-        # report the real number of SNPs phased into the reads instead.
-        hap_counts = [r["n_hap_snps"] for r in recs
-                      if r.get("n_hap_snps") not in (None, "")]
-        n_snps = max(hap_counts) if hap_counts else len({r["snp_id"] for r in recs})
+        mean_ratio = unit["mean_ratio"]
+        log2_ratio = unit["log2_ratio"]
+        # The validation gate: the maxsnp path is gated on cross-SNP direction
+        # concordance (the advisor's requirement); the plant path keeps the
+        # within-plant phase concordance check.
+        concordant_for_call = (extra["snp_concordant"]
+                               if gene_aggregation == "maxsnp"
+                               else qc["phase_concordant"])
 
         results.append({
             "gene_id": gene_id,
             "gene_name": recs[0].get("gene_name", gene_id),
-            "n_snps": n_snps,
-            "n_plants": len(plant_res),
-            "n_backgrounds": n_backgrounds,
+            "n_snps": qc["n_snps"],
+            "n_plants": unit["n_plants"],
+            "n_backgrounds": unit["n_backgrounds"],
             "n_flowers": len({r["flower"] for r in recs}),
-            "variable_reads": v_tot,
-            "fixed_reads": f_tot,
-            "other_reads": o_tot,
+            "variable_reads": qc["variable_reads"],
+            "fixed_reads": qc["fixed_reads"],
+            "other_reads": qc["other_reads"],
             "mean_variable_ratio": round(mean_ratio, 4),
             "log2_ratio": round(log2_ratio, 4) if not math.isnan(log2_ratio) else "NA",
-            "null_p": round(null_p, 4),
-            "p_primary": p_primary_val,
+            "null_p": round(qc["null_p"], 4),
+            "p_primary": unit["p_primary"],
             "q_value": 1.0,
-            "method": "+".join(methods),
-            "per_plant_log2": ";".join(f"{p}={r['log2']:.3f}"
-                                       for p, r in sorted(plant_res.items())),
-            "per_plant_p": ";".join(f"{p}={r['p']:.2e}"
-                                    for p, r in sorted(plant_res.items())),
-            "direction": st.direction(mean_ratio, null_p),
-            "consistent_backgrounds": consistent,
-            "phase_concordant": phase_conc,
-            "ambiguous_fraction": round(other_fraction, 4),
-            "low_ambiguity": low_ambiguity,
-            "variable_allele_seen": variable_seen,
-            "n_plants_variable_seen": n_plants_variable,
-            "fixed_allele_seen": fixed_seen,
-            "n_plants_fixed_seen": n_plants_fixed,
-            "possible_ref_bias": possible_ref_bias,
-            "n_both_hom_snps": len({r["snp_id"] for r in recs
-                                    if r.get("tier") == "both_hom"}),
+            "method": unit["method"],
+            "per_plant_log2": unit["per_plant_log2"],
+            "per_plant_p": unit["per_plant_p"],
+            "direction": unit["direction"],
+            "consistent_backgrounds": unit["consistent_backgrounds"],
+            "phase_concordant": qc["phase_concordant"],
+            "ambiguous_fraction": round(qc["ambiguous_fraction"], 4),
+            "low_ambiguity": qc["low_ambiguity"],
+            "variable_allele_seen": qc["variable_allele_seen"],
+            "n_plants_variable_seen": unit["n_plants_variable_seen"],
+            "fixed_allele_seen": qc["fixed_allele_seen"],
+            "n_plants_fixed_seen": unit["n_plants_fixed_seen"],
+            "possible_ref_bias": qc["possible_ref_bias"],
+            "n_both_hom_snps": qc["n_both_hom_snps"],
+            "agg_method": extra["agg_method"],
+            "top_snp": extra["top_snp"],
+            "top_snp_p": extra["top_snp_p"],
+            "n_snps_same_dir": extra["n_snps_same_dir"],
+            "snp_concordant": extra["snp_concordant"],
+            "within_gene_correction": extra["within_gene_correction"],
             "_min_plants": min_plants,
+            "_concordant_for_call": concordant_for_call,
             "ase_call": False,
         })
 
@@ -348,9 +481,10 @@ def test_genes(count_records: List[Dict], *,
         r["ase_call"] = bool(q < alpha and effect_ok
                              and r["consistent_backgrounds"]
                              and r["n_plants"] >= r["_min_plants"]
-                             and r["phase_concordant"]
+                             and r["_concordant_for_call"]
                              and r["low_ambiguity"])
         r.pop("_min_plants", None)
+        r.pop("_concordant_for_call", None)
     results.sort(key=lambda r: r["p_primary"])
     return results
 

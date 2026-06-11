@@ -83,6 +83,21 @@ def _add_test_opts(p: argparse.ArgumentParser) -> None:
                         "directional aggregate that gains power with more plants "
                         "(still requires cross-background direction agreement); "
                         "prefer it when scaling beyond ~3 F1 plants.")
+    g.add_argument("--gene-aggregation", default="plant",
+                   choices=["plant", "maxsnp"],
+                   help="How a gene's SNPs become one call. 'plant' (default): "
+                        "pool each plant's SNPs, test per plant, combine plants "
+                        "(the read-backed --counter haplotype path gives one "
+                        "independent (K,N) per gene here). 'maxsnp': plain "
+                        "binomial PER SNP, take the strongest-signal SNP per gene, "
+                        "and require the gene's SNPs to agree in direction (all "
+                        "point to the same parent) -- the LD-robust alternative.")
+    g.add_argument("--within-gene-correction", default="sidak",
+                   choices=["sidak", "bonferroni", "none"],
+                   help="For --gene-aggregation maxsnp only: how to correct the "
+                        "strongest SNP's p-value for having picked the best of m "
+                        "SNPs in the gene. 'sidak' (default) and 'bonferroni' are "
+                        "conservative under within-gene LD; 'none' disables it.")
     g.add_argument("--flower-norm", default="equalize",
                    choices=["equalize", "none"],
                    help="Normalise differential flower (technical-replicate) "
@@ -206,6 +221,8 @@ def cmd_test(args) -> int:
                        ref_lineage=ref_lineage,
                        flower_norm=args.flower_norm,
                        combine=args.combine,
+                       gene_aggregation=args.gene_aggregation,
+                       within_gene_correction=args.within_gene_correction,
                        max_other_fraction=args.max_other_fraction)
     write_table(genes, GENE_COLS, f"{args.out}.gene_ase.tsv",
                 comment="ASErtain gene-level ASE", labels=labels)
@@ -324,6 +341,8 @@ def cmd_run(args) -> int:
         de_alpha=args.de_alpha,
         min_effect_log2=args.min_effect_log2, min_plants=args.min_plants,
         flower_norm=args.flower_norm, combine=args.combine, counter=args.counter,
+        gene_aggregation=args.gene_aggregation,
+        within_gene_correction=args.within_gene_correction,
         max_other_fraction=args.max_other_fraction,
         samtools=args.samtools, verbose=args.verbose)
     return 0
