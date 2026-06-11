@@ -29,3 +29,6 @@ AUDIT.md
 examples/ase_pipeline.png
 examples/ase_pipeline.svg
 ASErtain_pipeline_walkthrough.ipynb
+
+# Temporal files for debugging
+TEMP/
