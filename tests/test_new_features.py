@@ -540,7 +540,7 @@ def test_mpileup_uses_uncapped_depth_and_matched_flags():
 
 
 # ---------------------------------------------------------------------------
-# Max-SNP aggregation (advisor's per-SNP binomial + strongest-signal-per-gene
+# Max-SNP aggregation (the simplest approach relative to haplotype: per-SNP binomial + strongest-signal-per-gene
 # with directional concordance validation)
 # ---------------------------------------------------------------------------
 

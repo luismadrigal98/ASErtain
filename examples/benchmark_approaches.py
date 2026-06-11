@@ -8,7 +8,7 @@ SAME simulated fragments:
   H  haplotype + plant-aggregation (read-backed: one independent (K,N)/gene)
              -- the method the lab wants to keep                 [LD-correct]
   M  pileup  + maxsnp-aggregation (plain binomial per SNP, strongest SNP per
-             gene, require SNPs to agree in direction)           [advisor's]
+             gene, require SNPs to agree in direction)           [LD-aware]
 
 and reports, against the known truth, each method's sensitivity / empirical FDR
 and the pairwise overlap of the gene sets they call.
@@ -80,7 +80,7 @@ def run(n_genes=400, frac_ase=0.4, seed=1, alpha=0.05,
         print("Per-method performance vs ground truth:")
         score("P  pileup + plant (LD-naive)", cP, truth_ase, truth_dir, direction_of(P))
         score("H  haplotype + plant (keep)", cH, truth_ase, truth_dir, direction_of(H))
-        score("M  pileup + maxsnp (advisor)", cM, truth_ase, truth_dir, direction_of(M))
+        score("M  pileup + maxsnp", cM, truth_ase, truth_dir, direction_of(M))
 
         print("\nPairwise overlap of called gene sets:")
         for name, a, b in [("H vs M (haplotype vs max-SNP)", cH, cM),

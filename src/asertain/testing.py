@@ -61,7 +61,7 @@ MAX_OTHER_FRACTION = 0.10
 #   "plant"  : the default/haplotype path -- pool a plant's SNPs, test each
 #              plant, combine plants (LD handled by the haplotype counter or
 #              absorbed as dispersion by the beta-binomial).
-#   "maxsnp" : the advisor's alternative -- a plain binomial PER SNP, take the
+#   "maxsnp" : the simplest approach relative to haplotype -- a plain binomial PER SNP, take the
 #              strongest-signal SNP per gene, and require the gene's SNPs to
 #              agree in direction (all point to the same parent). Avoids LD by
 #              never combining correlated SNPs; the selection of the best of m
@@ -306,7 +306,7 @@ def _gene_qc(recs, *, ref_lineage, max_other_fraction):
 
 
 def _aggregate_maxsnp(recs, *, size_factors, combine, correction, min_plants):
-    """The advisor's alternative: a plain binomial PER SNP, then take the
+    """The simplest approach relative to haplotype: a plain binomial PER SNP, then take the
     strongest-signal SNP for the gene and validate that the gene's SNPs all
     point to the same parent.
 
@@ -317,7 +317,7 @@ def _aggregate_maxsnp(recs, *, size_factors, combine, correction, min_plants):
     max-p combine), and the gene takes its **best** SNP. Because we picked the
     best of ``m`` SNPs, the selected p is corrected for ``m`` (Sidak by
     default; under LD the SNPs are positively correlated so this is
-    conservative). The validation the advisor asked for is the directional
+    conservative). The required validation is the directional
     **concordance** requirement: every informative SNP of the gene must point
     the same way (same parent); a gene whose SNPs disagree is not called.
     """
@@ -434,7 +434,7 @@ def test_genes(count_records: List[Dict], *,
         mean_ratio = unit["mean_ratio"]
         log2_ratio = unit["log2_ratio"]
         # The validation gate: the maxsnp path is gated on cross-SNP direction
-        # concordance (the advisor's requirement); the plant path keeps the
+        # concordance; the plant path keeps the
         # within-plant phase concordance check.
         concordant_for_call = (extra["snp_concordant"]
                                if gene_aggregation == "maxsnp"
