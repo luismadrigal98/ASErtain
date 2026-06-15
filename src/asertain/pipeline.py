@@ -43,6 +43,7 @@ def run_pipeline(config: str, vcf: str, out_prefix: str, *,
                  within_gene_correction: str = "sidak",
                  counter: str = "pileup",
                  max_other_fraction: float = 0.10,
+                 filter_secondary: bool = False,
                  samtools: str = "samtools",
                  verbose: bool = False) -> dict:
     cfg = load_config(config)
@@ -68,13 +69,14 @@ def run_pipeline(config: str, vcf: str, out_prefix: str, *,
         print("[2/5] count: read-backed haplotype counting in F1 flowers ...")
         counts = count_flowers_haplotype(
             cfg, snps, min_mapq=min_mapq, min_baseq=min_baseq,
-            min_depth=min_count_depth, samtools=samtools)
+            min_depth=min_count_depth, filter_secondary=filter_secondary,
+            samtools=samtools)
     else:
         print("[2/5] count: allele-specific (per-SNP) counting in F1 flowers ...")
         counts = counting.count_flowers(
             cfg, snps, bias_mode=bias_mode, control_table=control_table,
             min_mapq=min_mapq, min_baseq=min_baseq, min_depth=min_count_depth,
-            samtools=samtools)
+            filter_secondary=filter_secondary, samtools=samtools)
     write_allele_counts(counts, f"{out_prefix}.allele_counts.tsv",
                         bias_mode=bias_mode, labels=labels)
     print(f"      {len(counts)} {'gene×flower' if counter=='haplotype' else 'SNP×flower'} observations")
@@ -127,7 +129,8 @@ def run_pipeline(config: str, vcf: str, out_prefix: str, *,
             # this keeps per-gene samtools counting fast.
             cand = {g["gene_id"] for g in genes}
             de_rows = expr_mod.run_parental_de(
-                cfg, gene_index, gene_ids=cand, min_mapq=min_mapq, samtools=samtools)
+                cfg, gene_index, gene_ids=cand, min_mapq=min_mapq,
+                filter_secondary=filter_secondary, samtools=samtools)
             de_path = f"{out_prefix}.parental_de.tsv"
             write_table(de_rows, DE_COLS, de_path,
                         comment="ASErtain parental differential expression (variable/fixed)",

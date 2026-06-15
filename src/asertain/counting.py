@@ -125,6 +125,7 @@ def count_flowers(cfg: CrossConfig, snps: List[InformativeSNP], *,
                   control_table: Optional[str] = None,
                   min_mapq: int = 20, min_baseq: int = 20,
                   min_depth: int = 10,
+                  filter_secondary: bool = False,
                   samtools: str = "samtools",
                   progress: bool = True) -> List[Dict]:
     """Count alleles for every (flower × SNP informative for its plant)."""
@@ -155,11 +156,13 @@ def count_flowers(cfg: CrossConfig, snps: List[InformativeSNP], *,
             if not os.path.exists(fl.bam):
                 raise FileNotFoundError(
                     f"BAM for flower '{fl.name}' (plant {pl.name}) not found: {fl.bam}")
-            external.ensure_bam_index(fl.bam, samtools=samtools)
+            bam = external.prepare_bam(
+                fl.bam, filter_secondary=filter_secondary, samtools=samtools)
+            external.ensure_bam_index(bam, samtools=samtools)
             for snp in usable:
                 pa = snp.per_plant[pl.name]
                 counts = count_alleles(
-                    fl.bam, snp.chrom, snp.pos, pa.variable, pa.fixed,
+                    bam, snp.chrom, snp.pos, pa.variable, pa.fixed,
                     min_mapq=min_mapq, min_baseq=min_baseq,
                     reference=reference, samtools=samtools)
                 # Filter on allele-bearing reads, not raw/usable depth: a SNP is

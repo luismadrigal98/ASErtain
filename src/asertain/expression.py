@@ -65,6 +65,7 @@ DE_DIRECTION_COLS = ("higher_in",)
 def count_parental_expression(cfg: CrossConfig, gene_index: GeneIndex, *,
                               gene_ids: Optional[set] = None,
                               min_mapq: int = 20,
+                              filter_secondary: bool = False,
                               samtools: str = "samtools",
                               progress: bool = True
                               ) -> Tuple[Dict[str, Dict[str, int]],
@@ -96,10 +97,15 @@ def count_parental_expression(cfg: CrossConfig, gene_index: GeneIndex, *,
             "under the parents in the config to enable the parental-DE stage, "
             "or supply an external DE table to `contrast`.")
 
-    for s, bam, _, _ in samples:
+    checked_samples: List[Tuple[str, str, str, str]] = []
+    for s, bam, lin, geno in samples:
         if not os.path.exists(bam):
             raise FileNotFoundError(f"parental BAM for '{s}' not found: {bam}")
+        bam = external.prepare_bam(bam, filter_secondary=filter_secondary,
+                                   samtools=samtools)
         external.ensure_bam_index(bam, samtools=samtools)
+        checked_samples.append((s, bam, lin, geno))
+    samples = checked_samples
 
     genes = [(chrom, g) for chrom, g in gene_index.iter_genes()
              if gene_ids is None or g.gene_id in gene_ids]
@@ -283,7 +289,8 @@ def differential_expression(counts: Dict[str, Dict[str, int]],
 
 def run_parental_de(cfg: CrossConfig, gene_index: GeneIndex, *,
                     gene_ids: Optional[set] = None,
-                    min_mapq: int = 20, samtools: str = "samtools",
+                    min_mapq: int = 20, filter_secondary: bool = False,
+                    samtools: str = "samtools",
                     pseudocount: float = 1.0,
                     progress: bool = True) -> List[Dict]:
     """Count parental libraries and compute variable-vs-fixed DE, with a
@@ -298,7 +305,7 @@ def run_parental_de(cfg: CrossConfig, gene_index: GeneIndex, *,
               f"p-value, or supply a replicated external DE table to `contrast`.")
     counts, sample_lineage, gene_names, library_sizes, sample_genotype = count_parental_expression(
         cfg, gene_index, gene_ids=gene_ids, min_mapq=min_mapq,
-        samtools=samtools, progress=progress)
+        filter_secondary=filter_secondary, samtools=samtools, progress=progress)
     return differential_expression(counts, sample_lineage, gene_names,
                                    library_sizes=library_sizes,
                                    sample_genotype=sample_genotype,

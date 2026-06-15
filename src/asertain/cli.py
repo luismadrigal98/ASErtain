@@ -65,6 +65,12 @@ def _add_count_opts(p: argparse.ArgumentParser) -> None:
                    help="Min total depth per SNP×replicate to keep (default: 10)")
     g.add_argument("--samtools", default="samtools",
                    help="samtools executable (default: samtools)")
+    g.add_argument("--filter-secondary", action="store_true",
+                   help="Check each BAM for secondary alignments (FLAG 0x100) "
+                        "and, if any are found, write a filtered copy "
+                        "(<name>.no_secondary.bam) before counting. Without "
+                        "this flag secondary alignments are still excluded at "
+                        "runtime via -F flags, but the raw BAM is unchanged.")
 
 
 def _add_test_opts(p: argparse.ArgumentParser) -> None:
@@ -171,13 +177,15 @@ def cmd_count(args) -> int:
         print("Counter: read-backed haplotype (one independent (K,N) per gene×plant)")
         records = count_flowers_haplotype(
             cfg, snps, min_mapq=args.min_mapq, min_baseq=args.min_baseq,
-            min_depth=args.min_count_depth, samtools=args.samtools)
+            min_depth=args.min_count_depth,
+            filter_secondary=args.filter_secondary, samtools=args.samtools)
     else:
         from .counting import count_flowers
         records = count_flowers(
             cfg, snps, bias_mode=args.bias_mode, control_table=args.control_table,
             min_mapq=args.min_mapq, min_baseq=args.min_baseq,
-            min_depth=args.min_count_depth, samtools=args.samtools)
+            min_depth=args.min_count_depth,
+            filter_secondary=args.filter_secondary, samtools=args.samtools)
     write_allele_counts(records, f"{args.out}.allele_counts.tsv",
                         bias_mode=args.bias_mode, labels=Labels.from_config(cfg))
     print(f"Wrote {len(records)} observations to {args.out}.allele_counts.tsv")
@@ -306,7 +314,9 @@ def cmd_parental_de(args) -> int:
                         and not ln.startswith("#")}
         print(f"Restricting DE to {len(gene_ids)} genes from {args.genes}")
     de = run_parental_de(cfg, gene_index, gene_ids=gene_ids,
-                         min_mapq=args.min_mapq, samtools=args.samtools)
+                         min_mapq=args.min_mapq,
+                         filter_secondary=args.filter_secondary,
+                         samtools=args.samtools)
     write_table(de, DE_COLS, f"{args.out}.parental_de.tsv",
                 comment="ASErtain parental differential expression (variable/fixed)",
                 labels=Labels.from_config(cfg), direction_cols=DE_DIRECTION_COLS)
@@ -344,6 +354,7 @@ def cmd_run(args) -> int:
         gene_aggregation=args.gene_aggregation,
         within_gene_correction=args.within_gene_correction,
         max_other_fraction=args.max_other_fraction,
+        filter_secondary=args.filter_secondary,
         samtools=args.samtools, verbose=args.verbose)
     return 0
 
@@ -370,6 +381,7 @@ def cmd_check(args) -> int:
         print(f"  ✗ missing BAMs for flowers: {missing}")
         return 1
     print(f"  ✓ all {len(cfg.flowers)} flower BAMs present")
+    _check_secondary(cfg.flowers, args.samtools)
 
     # Parental-DE readiness (optional stage).
     if cfg.has_parental_expression():
@@ -493,6 +505,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Min mapping quality for read counting (default: 20)")
     pde.add_argument("--de-alpha", type=float, default=0.05,
                      help="DE FDR threshold for the summary count (default: 0.05)")
+    pde.add_argument("--filter-secondary", action="store_true",
+                     help="Strip secondary alignments from parental BAMs before counting")
     pde.add_argument("--samtools", default="samtools")
     pde.set_defaults(func=cmd_parental_de)
 
@@ -509,6 +523,22 @@ def _ensure_out_dir(prefix: str) -> None:
     d = os.path.dirname(prefix)
     if d:
         os.makedirs(d, exist_ok=True)
+
+
+def _check_secondary(flowers, samtools: str = "samtools") -> None:
+    """Report secondary-alignment counts for a list of Flower objects."""
+    from . import external
+    any_found = False
+    for fl in flowers:
+        if not os.path.exists(fl.bam):
+            continue
+        n = external.count_secondary_alignments(fl.bam, samtools=samtools)
+        if n:
+            print(f"  ⚠ {fl.name}: {n:,} secondary alignments "
+                  f"(use --filter-secondary in `count` to remove them)")
+            any_found = True
+    if not any_found:
+        print("  ✓ no secondary alignments found in any flower BAM")
 
 
 def main(argv=None) -> int:

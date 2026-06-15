@@ -181,6 +181,72 @@ def ensure_bam_index(bam: str, samtools: str = "samtools") -> None:
 
 
 # ---------------------------------------------------------------------------
+# Secondary alignment handling
+# ---------------------------------------------------------------------------
+
+def count_secondary_alignments(bam: str, samtools: str = "samtools") -> int:
+    """Return the number of secondary alignments in a BAM (FLAG 0x100).
+
+    Uses ``samtools view -c -f 0x100`` — a single pass over the BAM index for
+    coordinate-sorted files. Fast even on large BAMs.
+    """
+    res = run([samtools, "view", "-c", "-f", "0x100", bam])
+    out = res.stdout.strip()
+    return int(out) if out else 0
+
+
+def filter_secondary_alignments(bam: str, out_bam: str,
+                                samtools: str = "samtools") -> str:
+    """Write a new BAM excluding secondary alignments (FLAG 0x100); index it.
+
+    Returns ``out_bam``. The output BAM is indexed immediately so it is ready
+    for random-access queries without a separate ``ensure_bam_index`` call.
+    """
+    run([samtools, "view", "-F", "0x100", "-b", "-o", out_bam, bam])
+    run([samtools, "index", out_bam])
+    return out_bam
+
+
+def prepare_bam(bam: str, *, filter_secondary: bool = False,
+                samtools: str = "samtools") -> str:
+    """Check for secondary alignments and optionally remove them.
+
+    Returns the BAM path to use for downstream analysis — either ``bam``
+    unchanged or a filtered copy with a ``.no_secondary.bam`` suffix written
+    alongside the original.
+
+    When ``filter_secondary`` is False (the default) secondary alignments are
+    still excluded at runtime via the ``-F 3844`` flag in
+    :func:`samtools_mpileup` / :func:`samtools_view`; this function only warns
+    so the analyst is aware they exist.  Pass ``filter_secondary=True`` (CLI
+    flag ``--filter-secondary``) to strip them from the BAM before analysis —
+    useful for GATK or other tools that do not expose a per-flag exclude filter.
+
+    The filtered copy is reused on repeated runs if it already exists alongside
+    the original.
+    """
+    n = count_secondary_alignments(bam, samtools=samtools)
+    if n == 0:
+        return bam
+    stem, _ = os.path.splitext(bam)
+    filtered = stem + ".no_secondary.bam"
+    if filter_secondary:
+        if not os.path.exists(filtered):
+            print(f"  [secondary] {n:,} secondary alignments in "
+                  f"{os.path.basename(bam)} — writing filtered copy "
+                  f"{os.path.basename(filtered)}", flush=True)
+            filter_secondary_alignments(bam, filtered, samtools=samtools)
+        else:
+            print(f"  [secondary] {os.path.basename(bam)} has {n:,} secondary "
+                  f"alignments — reusing {os.path.basename(filtered)}", flush=True)
+        return filtered
+    print(f"  WARNING: {os.path.basename(bam)} contains {n:,} secondary "
+          f"alignments (excluded at runtime by -F flags; use "
+          f"--filter-secondary to strip them from the BAM)", flush=True)
+    return bam
+
+
+# ---------------------------------------------------------------------------
 # GATK ASEReadCounter (optional counting backend)
 # ---------------------------------------------------------------------------
 

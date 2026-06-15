@@ -140,6 +140,7 @@ def count_gene_haplotypes(bam: str, chrom: str, span_start: int, span_end: int,
 def count_flowers_haplotype(cfg: CrossConfig, snps: List[InformativeSNP], *,
                             min_mapq: int = 20, min_baseq: int = 20,
                             min_depth: int = 10,
+                            filter_secondary: bool = False,
                             samtools: str = "samtools",
                             progress: bool = True) -> List[Dict]:
     """Read-backed counts for every (flower × gene informative for its plant).
@@ -180,12 +181,14 @@ def count_flowers_haplotype(cfg: CrossConfig, snps: List[InformativeSNP], *,
             if not os.path.exists(fl.bam):
                 raise FileNotFoundError(
                     f"BAM for flower '{fl.name}' (plant {pl.name}) not found: {fl.bam}")
-            external.ensure_bam_index(fl.bam, samtools=samtools)
+            bam = external.prepare_bam(
+                fl.bam, filter_secondary=filter_secondary, samtools=samtools)
+            external.ensure_bam_index(bam, samtools=samtools)
             for (gene_id, gene_name, chrom), gsnps in by_gene.items():
                 positions = [p for p, _, _ in gsnps]
                 triples = [(p, pa.variable, pa.fixed) for p, pa, _ in gsnps]
                 var, fix, amb, _n = count_gene_haplotypes(
-                    fl.bam, chrom, min(positions), max(positions), triples,
+                    bam, chrom, min(positions), max(positions), triples,
                     min_mapq=min_mapq, min_baseq=min_baseq, samtools=samtools)
                 if var + fix < min_depth:
                     continue
