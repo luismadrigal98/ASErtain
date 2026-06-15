@@ -90,7 +90,8 @@ asertain run --config "$CONFIG" \
     --vcf "$WORK/anthocyanin.vcf.gz" --out "$WORK/ase" \
     --bias-mode report \
     --min-parent-depth 10 --maf-threshold 0.10 \
-    --min-count-depth 10 --min-mapq 20 --min-baseq 20 \
+    --min-count-depth 10 --min-mapq 30 --min-baseq 20 \
+    --filter-secondary \
     --counter haplotype \
     --flower-norm equalize \
     --compute-parental-de --de-alpha 0.05 \
@@ -110,8 +111,9 @@ asertain run --config "$CONFIG" \
     --vcf "$WORK2/anthocyanin.vcf.gz" --out "$WORK2/ase" \
     --bias-mode report \
     --min-parent-depth 10 --maf-threshold 0.10 \
-    --min-count-depth 10 --min-mapq 20 --min-baseq 20 \
+    --min-count-depth 10 --min-mapq 30 --min-baseq 20 \
     --counter pileup \
+    --filter-secondary \
     --gene-aggregation maxsnp \
     --flower-norm equalize \
     --compute-parental-de --de-alpha 0.05 \
