@@ -561,16 +561,45 @@ def test_maxsnp_concordant_strong_gene_is_called():
 
 
 def test_maxsnp_discordant_gene_is_blocked():
-    # SNP1 strongly variable, SNP2 strongly fixed -> the gene's SNPs disagree on
-    # the parent, so the concordance validation must veto the call even though
-    # each SNP on its own is individually significant.
+    # SNP1 strongly variable, SNP2 strongly fixed in EVERY plant -> the gene's
+    # SNPs disagree on the parent systematically (not one plant's private
+    # tract), so excluding the discordant plants would leave nothing to test.
+    # The gene must still get a row (falling back to the full record set) and
+    # must be vetoed, even though each SNP on its own is individually
+    # significant (audit M5/M6).
     recs = []
     for p, bg in [("P1", "b1"), ("P2", "b2")]:
         recs.append(_rec(f"{p}f", p, "chr1:100", 88, 12, bg=bg))   # variable
         recs.append(_rec(f"{p}f", p, "chr1:200", 12, 88, bg=bg))   # fixed
     g = testing.test_genes(recs, gene_aggregation="maxsnp")[0]
     assert g["snp_concordant"] is False
+    assert g["phase_concordant"] is False
+    assert g["n_plants_phase_excluded"] == 2
     assert g["ase_call"] is False
+
+
+def test_maxsnp_one_discordant_plant_does_not_veto_clean_siblings():
+    # P1 has a private within-gene flip (a gene-conversion-style tract: its
+    # own SNPs disagree on direction), but P2 and P3's SNPs are clean and
+    # strongly variable, across two different backgrounds. Audit M6: a
+    # private per-plant discordance must be excluded rather than vetoing the
+    # whole gene, so the call rests on the two clean plants (still satisfying
+    # the cross-background consistency check, audit M4).
+    recs = [
+        _rec("P1f", "P1", "chr1:100", 88, 12, bg="b1"),   # variable
+        _rec("P1f", "P1", "chr1:200", 12, 88, bg="b1"),   # fixed (flip)
+        _rec("P2f", "P2", "chr1:100", 88, 12, bg="b1"),   # variable
+        _rec("P2f", "P2", "chr1:150", 85, 15, bg="b1"),   # variable
+        _rec("P3f", "P3", "chr1:100", 88, 12, bg="b2"),   # variable
+        _rec("P3f", "P3", "chr1:150", 85, 15, bg="b2"),   # variable
+    ]
+    g = testing.test_genes(recs, gene_aggregation="maxsnp", min_plants=1)[0]
+    assert g["phase_concordant"] is False           # raw, pre-exclusion state
+    assert g["n_plants_phase_excluded"] == 1
+    assert g["phase_excluded_plants"] == "P1"
+    assert g["snp_concordant"] is True               # the two clean plants agree
+    assert g["consistent_backgrounds"] is True
+    assert g["ase_call"] is True
 
 
 def test_maxsnp_within_gene_correction_is_conservative():

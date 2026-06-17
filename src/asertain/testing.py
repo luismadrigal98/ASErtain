@@ -42,6 +42,7 @@ GENE_COLS = [
     "log2_ratio", "null_p", "p_primary", "q_value", "method",
     "per_plant_log2", "per_plant_p", "direction",
     "consistent_backgrounds", "phase_concordant",
+    "n_plants_phase_excluded", "phase_excluded_plants",
     "ambiguous_fraction", "low_ambiguity",
     "variable_allele_seen", "n_plants_variable_seen",
     "fixed_allele_seen", "n_plants_fixed_seen", "possible_ref_bias",
@@ -415,15 +416,33 @@ def test_genes(count_records: List[Dict], *,
     results: List[Dict] = []
 
     for gene_id, recs in by_gene.items():
-        qc = _gene_qc(recs, ref_lineage=ref_lineage,
+        # Drop plants whose own SNPs disagree on direction within this gene
+        # (audit M6) — a private gene-conversion/mis-phasing tract in one
+        # individual should not veto a call the OTHER plants cleanly support.
+        # `phase_concordant` below still reports the pre-exclusion state.
+        discordant_plants = _discordant_plants(recs)
+        phase_concordant_raw = not discordant_plants
+        recs_clean = ([r for r in recs if r["plant"] not in discordant_plants]
+                      if discordant_plants else recs)
+        if not recs_clean:
+            # Every plant is individually discordant — this is not one
+            # plant's private gene-conversion tract but a systematic,
+            # gene-wide signal (e.g. a merged-paralog model). Excluding
+            # everyone would silently drop the gene from the report; fall
+            # back to the full (unfiltered) records so it still gets a row,
+            # reported via phase_concordant=False / snp_concordant=False so
+            # `ase_call` stays False through the existing concordance gate.
+            recs_clean = recs
+
+        qc = _gene_qc(recs_clean, ref_lineage=ref_lineage,
                       max_other_fraction=max_other_fraction)
         if gene_aggregation == "maxsnp":
             unit, extra = _aggregate_maxsnp(
-                recs, size_factors=size_factors, combine=combine,
+                recs_clean, size_factors=size_factors, combine=combine,
                 correction=within_gene_correction, min_plants=min_plants,
                 alpha=alpha)
         else:
-            unit = _score_records(recs, size_factors=size_factors,
+            unit = _score_records(recs_clean, size_factors=size_factors,
                                   combine=combine)
             extra = {"agg_method": "plant", "top_snp": "NA", "top_snp_p": "NA",
                      "n_snps_same_dir": "NA",
@@ -461,7 +480,9 @@ def test_genes(count_records: List[Dict], *,
             "per_plant_p": unit["per_plant_p"],
             "direction": unit["direction"],
             "consistent_backgrounds": unit["consistent_backgrounds"],
-            "phase_concordant": qc["phase_concordant"],
+            "phase_concordant": phase_concordant_raw,
+            "n_plants_phase_excluded": len(discordant_plants),
+            "phase_excluded_plants": ";".join(sorted(discordant_plants)),
             "ambiguous_fraction": round(qc["ambiguous_fraction"], 4),
             "low_ambiguity": qc["low_ambiguity"],
             "variable_allele_seen": qc["variable_allele_seen"],
@@ -522,6 +543,7 @@ PLANT_DETAIL_COLS = [
     "gene_id", "gene_name", "plant", "background", "n_snps",
     "variable_reads", "fixed_reads", "allelic_depth",
     "variable_ratio", "log2_ratio", "rho", "method", "p_plant", "null_p",
+    "phase_excluded",
 ]
 
 
@@ -636,6 +658,7 @@ def plant_gene_detail(count_records: List[Dict], *,
     rows: List[Dict] = []
     for gene_id, recs in by_gene.items():
         null_p = _gene_null(recs)
+        discordant_plants = _discordant_plants(recs)
         for plant, triples in _plant_snp_counts(recs, size_factors,
                                                 with_null=True).items():
             res = _plant_test(triples)
@@ -645,6 +668,7 @@ def plant_gene_detail(count_records: List[Dict], *,
             rows.append({
                 "gene_id": gene_id, "gene_name": name_of_gene.get(gene_id, gene_id),
                 "plant": plant, "background": bg_of_plant.get(plant, ""),
+                "phase_excluded": plant in discordant_plants,
                 "n_snps": res["n_snps"],
                 "variable_reads": k, "fixed_reads": n - k, "allelic_depth": n,
                 "variable_ratio": round(k / n, 4) if n else "NA",
@@ -657,13 +681,16 @@ def plant_gene_detail(count_records: List[Dict], *,
     return rows
 
 
-def _phase_concordant(records: List[Dict]) -> bool:
-    """Within each plant, do the gene's per-SNP imbalance directions agree?
+def _discordant_plants(records: List[Dict]) -> set:
+    """Plants whose own SNPs disagree in direction within this gene.
 
     A `phased`-tier SNP whose parent was mis-called homozygous (parental ASE)
-    can be summed in the wrong orientation; if a plant's SNPs disagree on
-    direction the gene ratio is suspect. Returns True if every plant's SNPs are
-    directionally concordant (ignoring near-balanced SNPs), else False.
+    can be summed in the wrong orientation; a real per-individual gene-conversion
+    or micro-recombination tract can also make a subset of a plant's SNPs point
+    the opposite way from the rest of the gene (audit M6). Either way, that
+    plant's reads are not a single coherent signal for this gene and should not
+    be pooled together — but the OTHER plants are unaffected and may still
+    support a clean call, so the right unit to drop is the plant, not the gene.
 
     Each SNP is judged against its OWN null (which differs across SNPs under a
     per-SNP null-shift control), not a single gene-level null — otherwise SNPs
@@ -677,7 +704,8 @@ def _phase_concordant(records: List[Dict]) -> bool:
         slot[0] += r["variable_count"]
         slot[1] += r["variable_count"] + r["fixed_count"]
         slot[2] = r.get("null_p", 0.5)           # per-SNP null
-    for snps in per_plant_snp.values():
+    discordant = set()
+    for plant, snps in per_plant_snp.items():
         dirs = set()
         for v, n, snp_null in snps.values():
             if n < 1:
@@ -686,5 +714,16 @@ def _phase_concordant(records: List[Dict]) -> bool:
             if d != "balanced":
                 dirs.add(d)
         if len(dirs) > 1:
-            return False
-    return True
+            discordant.add(plant)
+    return discordant
+
+
+def _phase_concordant(records: List[Dict]) -> bool:
+    """True if every plant's per-SNP directions agree within this gene.
+
+    See `_discordant_plants` for the per-SNP-vs-own-null logic. This collapsed
+    bool is kept for reporting (audit M5); `test_genes` uses the underlying
+    per-plant set to exclude only the offending plant(s) rather than vetoing
+    the whole gene (audit M6).
+    """
+    return not _discordant_plants(records)

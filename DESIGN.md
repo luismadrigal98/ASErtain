@@ -140,6 +140,22 @@ plant share a genome, so they are **not** independent biological replicates.
 * **Honesty flags** — `phase_concordant` (per-SNP directions agree within each
   plant), `fixed_allele_seen` / `possible_ref_bias` (separating real complete ASE
   from a fixed allele lost to mapping bias under a single-parent reference).
+
+  `phase_concordant` is checked **per plant**, not just once for the whole
+  gene: a plant whose own informative SNPs disagree on direction (e.g. a
+  local gene-conversion or micro-recombination tract that flips a short
+  exonic window — observed in one F1 individual but not its full sibling at
+  the same locus) is excluded from that gene's test rather than vetoing the
+  call for every plant. `phase_concordant` itself still reports the
+  *pre-exclusion* state (true only if no plant needed excluding); the
+  exclusion is made auditable via `n_plants_phase_excluded` and
+  `phase_excluded_plants` (the excluded plants' names). If excluding the
+  discordant plants would leave no plant to test — i.e. *every* plant is
+  individually discordant in the same way, pointing to a systematic,
+  gene-wide cause (a merged-paralog gene model, say) rather than one
+  individual's private event — the full unfiltered record set is used
+  instead so the gene still gets a reported row, and `phase_concordant=False`
+  vetoes the call as before (audit M5/M6).
 * **Descriptive only** — the pooled binomial and the per-plant logit t-test are
   reported but never drive calls.
 
